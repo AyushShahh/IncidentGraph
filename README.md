@@ -71,6 +71,11 @@ Every log emitted by all microservices strictly conforms to the canonical `LogEv
 - **`ServiceHttpClient`**: Persistent HTTP client utilizing connection pooling (`httpx.AsyncClient`) that automatically injects `x-trace-id`, `x-request-id`, `x-session-id`, and `x-upstream-service` into every outbound HTTP request header.
 - The distributed `trace_id` remains invariant throughout the entire service hop chain (`Gateway -> Orders -> Inventory -> Payments -> Notifications`).
 
+### Health Check Noise Reduction
+- **Suppressed on Success**: Docker health checks (`/health`, `/health/live`, `/health/ready`) that succeed (`< 400`) do not emit `http_request` or `http_response` logs to Kafka. This keeps `service-logs` clean and focused on business requests and anomalies.
+- **Logged on Failure**: Any health check returning `4xx`, `5xx`, or raising an exception emits an `ERROR` log (`event_type="health_check_failed"`) to Kafka, preserving critical incident signals.
+- **Tracing Header Preservation**: Distributed tracing headers (`x-trace-id`, `x-request-id`, `x-session-id`) are still populated and returned on all health checks.
+
 ---
 
 ## 3. Kafka Logging Pipeline
@@ -161,7 +166,11 @@ Two test suites are maintained and run entirely within Docker without host virtu
 ### Suite 1: Fast Integration & Unit Tests (ASGITransport)
 Runs in-memory across the 5 microservices using `ASGITransport` and Kafka test spies:
 ```bash
-docker compose run --rm test-runner pytest tests/unit tests/integration/test_service_apis.py tests/integration/test_trace_propagation.py tests/integration/test_failure_simulation.py -v
+docker compose run --rm test-runner pytest tests/unit tests/integration/test_service_apis.py tests/integration/test_trace_propagation.py tests/integration/test_failure_simulation.py tests/integration/test_health_logging.py -v
+```
+Or via Makefile:
+```bash
+make test-fast
 ```
 
 ### Suite 2: Real Integration Tests (Live Docker & Real Kafka)

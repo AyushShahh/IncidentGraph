@@ -14,6 +14,7 @@ from backend.api.v1.health import router as health_router
 from backend.db.session import engine
 from backend.redis.client import get_redis_client, close_redis_client
 from backend.qdrant.client import get_qdrant_client
+from shared.logging.middleware import TraceCorrelationMiddleware
 
 setup_logging()
 logger = logging.getLogger("backend.main")
@@ -100,6 +101,7 @@ def create_application() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(TraceCorrelationMiddleware, service_name="backend")
 
     # Include root API router
     app.include_router(api_router, prefix=settings.API_V1_STR)

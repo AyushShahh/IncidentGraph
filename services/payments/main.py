@@ -80,6 +80,7 @@ class ChargeRequest(BaseModel):
 @app.get("/health")
 async def health():
     """Service healthcheck."""
+    failure_injector.inject_failure_if_needed("health")
     return {"status": "ok", "service": SERVICE_NAME}
 
 
