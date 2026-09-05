@@ -92,3 +92,29 @@ def test_failure_injector_dynamic_reconfiguration():
     with pytest.raises(HTTPException) as exc:
         injector.inject_failure_if_needed("op")
     assert exc.value.status_code == 500
+
+
+def test_failure_injector_health_ignored_without_target_operation():
+    """Verify that health operation is never failed by generic failure simulation."""
+    injector = FailureInjector(service_name="test_svc", failure_rate=1.0, enabled_failures=["http_500"])
+    # Generic failure: health must not raise
+    injector.inject_failure_if_needed("health")
+    assert injector.call_count == 0  # Call count should not even increment for ignored health
+
+    # But regular operation must fail
+    with pytest.raises(HTTPException):
+        injector.inject_failure_if_needed("checkout")
+
+
+def test_failure_injector_health_fails_when_target_operation_is_health():
+    """Verify that health operation fails when target_operation == 'health' is explicitly requested."""
+    injector = FailureInjector(
+        service_name="test_svc",
+        failure_rate=1.0,
+        enabled_failures=["http_500"],
+        target_operation="health",
+    )
+    with pytest.raises(HTTPException) as exc:
+        injector.inject_failure_if_needed("health")
+    assert exc.value.status_code == 500
+

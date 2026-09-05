@@ -91,10 +91,12 @@ async def configure_failure(payload: FailureConfigRequest):
         failure_rate=payload.failure_rate,
         enabled_failures=payload.enabled_failures,
         trigger_after_n_calls=payload.trigger_after_n_calls,
+        target_operation=payload.target_operation,
     )
     return {
         "status": "updated",
         "service": SERVICE_NAME,
+        "target_operation": failure_injector.target_operation,
         "failure_rate": failure_injector.failure_rate,
         "enabled_failures": failure_injector.enabled_failures,
         "trigger_after_n_calls": failure_injector.trigger_after_n_calls,

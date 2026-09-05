@@ -28,6 +28,7 @@ class FailureConfigRequest(BaseModel):
     enabled_failures: Optional[list[str]] = None
     trigger_after_n_calls: Optional[int] = None
     target_service: Optional[str] = None
+    target_operation: Optional[str] = None
 
 
 class FailureInjector:
@@ -55,6 +56,7 @@ class FailureInjector:
         failure_rate: Optional[float] = None,
         enabled_failures: Optional[list[str]] = None,
         trigger_after_n_calls: int = 0,
+        target_operation: Optional[str] = None,
     ) -> None:
         self.service_name = service_name
         self.failure_rate = (
@@ -64,6 +66,7 @@ class FailureInjector:
         )
         self.enabled_failures = enabled_failures or list(self.ALL_FAILURES)
         self.trigger_after_n_calls = trigger_after_n_calls
+        self.target_operation = target_operation
         self.call_count = 0
         self.logger = get_service_logger(service_name)
 
@@ -72,6 +75,7 @@ class FailureInjector:
         failure_rate: Optional[float] = None,
         enabled_failures: Optional[list[str]] = None,
         trigger_after_n_calls: Optional[int] = None,
+        target_operation: Optional[str] = None,
     ) -> None:
         """Dynamically update failure simulation settings."""
         if failure_rate is not None:
@@ -80,6 +84,10 @@ class FailureInjector:
             self.enabled_failures = [f for f in enabled_failures if f in self.ALL_FAILURES]
         if trigger_after_n_calls is not None:
             self.trigger_after_n_calls = max(0, int(trigger_after_n_calls))
+        if target_operation is not None:
+            self.target_operation = target_operation if target_operation else None
+        elif failure_rate == 0.0:
+            self.target_operation = None
 
     def reset_counts(self) -> None:
         """Reset internal invocation counter."""
@@ -101,6 +109,14 @@ class FailureInjector:
         specific_mode: Optional[str] = None,
     ) -> None:
         """Inspect failure criteria and raise simulated exception if triggered."""
+        # /health only fails on genuine system errors or when target_operation == "health" is explicitly requested
+        if operation_name == "health" and self.target_operation != "health" and not specific_mode:
+            return
+
+        # If a specific target_operation is configured, other operations do not fail
+        if self.target_operation and self.target_operation not in (operation_name, "all") and not specific_mode:
+            return
+
         if not self.should_fail() and not specific_mode:
             return
 

@@ -105,9 +105,11 @@ curl -X POST http://localhost:8001/simulate-failure \
   -d '{
     "failure_rate": 0.5,
     "enabled_failures": ["database_timeout", "http_500"],
-    "trigger_after_n_calls": 5
+    "trigger_after_n_calls": 5,
+    "target_operation": "checkout"
   }'
 ```
+- **`target_operation`**: Target a specific endpoint operation (`"checkout"`, `"orders"`, `"health"`, etc.). By default, `/health` endpoints will **never** fail during generic failure simulation, preserving Docker health probes unless `target_operation: "health"` is explicitly specified.
 - **`trigger_after_n_calls`**: Ensures traffic initially succeeds before failure injection activates.
 - **`failure_rate`**: Configurable floating-point probability between `0.0` and `1.0`.
 

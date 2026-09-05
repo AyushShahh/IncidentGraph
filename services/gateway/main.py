@@ -109,15 +109,17 @@ async def configure_failure_simulation(payload: FailureConfigRequest):
         failure_rate=payload.failure_rate,
         enabled_failures=payload.enabled_failures,
         trigger_after_n_calls=payload.trigger_after_n_calls,
+        target_operation=payload.target_operation,
     )
     logger.info(
-        f"Updated failure configuration for service '{target}' (rate={injector.failure_rate})",
+        f"Updated failure configuration for service '{target}' (rate={injector.failure_rate}, op={injector.target_operation})",
         event_type="failure_config_updated",
-        attributes={"service": target, "rate": injector.failure_rate},
+        attributes={"service": target, "rate": injector.failure_rate, "target_operation": injector.target_operation},
     )
     return {
         "status": "updated",
         "target_service": target,
+        "target_operation": injector.target_operation,
         "failure_rate": injector.failure_rate,
         "enabled_failures": injector.enabled_failures,
         "trigger_after_n_calls": injector.trigger_after_n_calls,
