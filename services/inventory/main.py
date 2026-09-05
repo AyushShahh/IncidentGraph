@@ -1,32 +1,27 @@
-"""Inventory microservice for managing and reserving product stock."""
+"""Inventory microservice tracking SKU availability and reservations."""
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from shared.logging.middleware import TraceCorrelationMiddleware
 from shared.logging.logger import get_service_logger
 from shared.kafka.producer import get_shared_kafka_producer
-from shared.failures.injector import (
-    get_shared_failure_injector,
-    FailureConfigRequest,
-    DatabaseTimeoutException,
-    NetworkTimeoutException,
-    RetryExhaustionException,
-)
 
 SERVICE_NAME = "inventory"
 
 logger = get_service_logger(SERVICE_NAME)
-failure_injector = get_shared_failure_injector(SERVICE_NAME)
 
-# In-memory inventory stock
-STOCK_STORE: dict[str, int] = {
-    "SKU-100": 1000,
-    "SKU-200": 500,
-    "SKU-300": 0,
+# In-memory stock catalog
+DEFAULT_STOCK = {
+    "SKU-100": 100,  # High stock standard catalog item
+    "SKU-200": 50,   # Moderate stock catalog item
+    "SKU-LIMITED": 2, # Limited stock item - naturally runs out of stock under load
+    "SKU-OUT-OF-STOCK": 0, # Permanently depleted item
 }
+
+STOCK_STORE: dict[str, int] = dict(DEFAULT_STOCK)
 
 
 @asynccontextmanager
@@ -49,21 +44,6 @@ app = FastAPI(title="Inventory Service", version="0.1.0", lifespan=lifespan)
 app.add_middleware(TraceCorrelationMiddleware, service_name=SERVICE_NAME)
 
 
-@app.exception_handler(DatabaseTimeoutException)
-async def db_timeout_handler(request: Request, exc: DatabaseTimeoutException):
-    return JSONResponse(status_code=504, content={"detail": str(exc), "error": "database_timeout"})
-
-
-@app.exception_handler(NetworkTimeoutException)
-async def net_timeout_handler(request: Request, exc: NetworkTimeoutException):
-    return JSONResponse(status_code=504, content={"detail": str(exc), "error": "network_timeout"})
-
-
-@app.exception_handler(RetryExhaustionException)
-async def retry_exhaust_handler(request: Request, exc: RetryExhaustionException):
-    return JSONResponse(status_code=503, content={"detail": str(exc), "error": "retry_exhaustion"})
-
-
 class ReserveItemRequest(BaseModel):
     items: list[dict[str, Any]] = Field(..., description="List of items with sku and quantity")
 
@@ -71,80 +51,100 @@ class ReserveItemRequest(BaseModel):
 @app.get("/health")
 async def health():
     """Service healthcheck."""
-    failure_injector.inject_failure_if_needed("health")
     return {"status": "ok", "service": SERVICE_NAME}
-
-
-@app.post("/simulate-failure")
-async def configure_failure(payload: FailureConfigRequest):
-    """Configure failure injector settings at runtime."""
-    failure_injector.configure(
-        failure_rate=payload.failure_rate,
-        enabled_failures=payload.enabled_failures,
-        trigger_after_n_calls=payload.trigger_after_n_calls,
-        target_operation=payload.target_operation,
-    )
-    return {
-        "status": "updated",
-        "service": SERVICE_NAME,
-        "target_operation": failure_injector.target_operation,
-        "failure_rate": failure_injector.failure_rate,
-        "enabled_failures": failure_injector.enabled_failures,
-        "trigger_after_n_calls": failure_injector.trigger_after_n_calls,
-    }
-
-
-@app.get("/simulate-failure")
-async def get_failure_config():
-    """Return current failure injector settings."""
-    return {
-        "service": SERVICE_NAME,
-        "failure_rate": failure_injector.failure_rate,
-        "enabled_failures": failure_injector.enabled_failures,
-        "calls_recorded": failure_injector.call_count,
-        "trigger_after_n_calls": failure_injector.trigger_after_n_calls,
-    }
 
 
 @app.get("/inventory/{sku}")
 async def get_stock(sku: str):
     """Retrieve current stock count for SKU."""
-    failure_injector.inject_failure_if_needed("get_stock")
-
     stock = STOCK_STORE.get(sku)
     if stock is None:
-        logger.warning(f"SKU '{sku}' not found in catalog", attributes={"sku": sku})
-        raise HTTPException(status_code=404, detail=f"SKU {sku} not found")
+        logger.warning(
+            f"SKU '{sku}' not found in catalog",
+            event_type="catalog_miss",
+            error_code="SKU_NOT_FOUND",
+            attributes={"sku": sku},
+        )
+        raise HTTPException(
+            status_code=404,
+            detail=f"SKU '{sku}' not found",
+            headers={"x-error-code": "SKU_NOT_FOUND"},
+        )
 
-    logger.info(f"Retrieved stock for SKU '{sku}': {stock}", attributes={"sku": sku, "stock": stock})
+    logger.info(
+        f"Retrieved stock for SKU '{sku}': {stock}",
+        event_type="stock_checked",
+        attributes={"sku": sku, "stock": stock},
+    )
     return {"sku": sku, "quantity": stock}
 
 
 @app.post("/inventory/reserve")
 async def reserve_stock(payload: ReserveItemRequest):
     """Reserve inventory stock for ordered items."""
-    failure_injector.inject_failure_if_needed("reserve_stock")
+    # Validate payload
+    if not payload.items:
+        raise HTTPException(
+            status_code=400,
+            detail="Reservation items list cannot be empty",
+            headers={"x-error-code": "EMPTY_ITEMS_LIST"},
+        )
 
+    # Logic Bug / Edge Case: Batch warehouse slicing off-by-one error
+    # When reserving a multi-item order (more than 3 items), the developer implemented
+    # warehouse chunking in batches of 2 items.
+    # An off-by-one bug in the range boundary causes an IndexError on the final loop iteration.
+    if len(payload.items) > 3:
+        batch_size = 2
+        batches = [payload.items[i:i + batch_size] for i in range(0, len(payload.items), batch_size)]
+        # BUG: range(len(batches) + 1) instead of range(len(batches))
+        for batch_idx in range(len(batches) + 1):
+            _batch_chunk = batches[batch_idx]
+
+    # Check availability and deduct
     for item in payload.items:
         sku = item.get("sku")
         qty = item.get("quantity", 1)
-        available = STOCK_STORE.get(sku, 0)
 
+        if qty <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid quantity {qty} for SKU '{sku}': must be positive",
+                headers={"x-error-code": "INVALID_QUANTITY"},
+            )
+
+        if sku not in STOCK_STORE:
+            logger.warning(
+                f"Cannot reserve SKU '{sku}': not found in product catalog",
+                event_type="stock_reservation_failed",
+                error_code="SKU_NOT_FOUND",
+                attributes={"sku": sku, "requested": qty},
+            )
+            raise HTTPException(
+                status_code=404,
+                detail=f"SKU '{sku}' not found in catalog",
+                headers={"x-error-code": "SKU_NOT_FOUND"},
+            )
+
+        available = STOCK_STORE[sku]
         if available < qty:
-            logger.error(
+            logger.warning(
                 f"Insufficient stock for SKU '{sku}': requested {qty}, available {available}",
+                event_type="stock_reservation_failed",
+                error_code="OUT_OF_STOCK",
                 attributes={"sku": sku, "requested": qty, "available": available},
             )
             raise HTTPException(
-                status_code=400,
-                detail=f"Insufficient inventory for SKU {sku}",
+                status_code=409,
+                detail=f"SKU '{sku}' is out of stock (available: {available}, requested: {qty})",
+                headers={"x-error-code": "OUT_OF_STOCK"},
             )
 
         STOCK_STORE[sku] -= qty
 
     logger.info(
         f"Successfully reserved stock for {len(payload.items)} item(s)",
-        event_type="db_query",
+        event_type="stock_reserved",
         attributes={"items": payload.items},
     )
-    return {"status": "reserved", "reserved_items": payload.items}
+    return {"status": "reserved", "items": payload.items}

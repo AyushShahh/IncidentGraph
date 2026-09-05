@@ -9,19 +9,11 @@ from pydantic import BaseModel, Field
 from shared.logging.middleware import TraceCorrelationMiddleware
 from shared.logging.logger import get_service_logger
 from shared.kafka.producer import get_shared_kafka_producer
-from shared.failures.injector import (
-    get_shared_failure_injector,
-    FailureConfigRequest,
-    DatabaseTimeoutException,
-    NetworkTimeoutException,
-    RetryExhaustionException,
-)
 from shared.http_client import ServiceHttpClient
 
 SERVICE_NAME = "gateway"
 
 logger = get_service_logger(SERVICE_NAME)
-failure_injector = get_shared_failure_injector(SERVICE_NAME)
 http_client = ServiceHttpClient(caller_service=SERVICE_NAME)
 
 ORDERS_SERVICE_URL = os.getenv("ORDERS_SERVICE_URL", "http://orders:8002")
@@ -52,87 +44,64 @@ app = FastAPI(title="API Gateway Service", version="0.1.0", lifespan=lifespan)
 app.add_middleware(TraceCorrelationMiddleware, service_name=SERVICE_NAME)
 
 
-# Custom exception handlers for simulated faults
-@app.exception_handler(DatabaseTimeoutException)
-async def db_timeout_handler(request: Request, exc: DatabaseTimeoutException):
-    return JSONResponse(status_code=504, content={"detail": str(exc), "error": "database_timeout"})
-
-
-@app.exception_handler(NetworkTimeoutException)
-async def net_timeout_handler(request: Request, exc: NetworkTimeoutException):
-    return JSONResponse(status_code=504, content={"detail": str(exc), "error": "network_timeout"})
-
-
-@app.exception_handler(RetryExhaustionException)
-async def retry_exhaust_handler(request: Request, exc: RetryExhaustionException):
-    return JSONResponse(status_code=503, content={"detail": str(exc), "error": "retry_exhaustion"})
-
-
 class CheckoutItem(BaseModel):
     sku: str
     quantity: int = 1
-    unit_price: float = Field(..., gt=0)
+    unit_price: float = Field(default=25.0)
 
 
 class CheckoutRequest(BaseModel):
     user_id: str
     items: list[CheckoutItem]
     payment_method: str = "credit_card"
+    currency: str = "USD"
+    discount_code: Optional[str] = None
+
+
+def check_service_health() -> bool:
+    """Internal service health probe."""
+    return True
 
 
 @app.get("/health")
 async def health():
     """Service healthcheck."""
-    failure_injector.inject_failure_if_needed("health")
+    check_service_health()
     return {"status": "ok", "service": SERVICE_NAME}
-
-
-@app.get("/api/status")
-@app.get("/status")
-async def system_status():
-    """Returns gateway configuration and failure injection settings."""
-    return {
-        "service": SERVICE_NAME,
-        "failure_rate": failure_injector.failure_rate,
-        "enabled_failures": failure_injector.enabled_failures,
-        "calls_recorded": failure_injector.call_count,
-    }
-
-
-@app.post("/simulate-failure")
-@app.post("/api/simulate-failure")
-async def configure_failure_simulation(payload: FailureConfigRequest):
-    """Dynamically configure failure injector for gateway or a specific service."""
-    target = payload.target_service or SERVICE_NAME
-    injector = get_shared_failure_injector(target)
-    injector.configure(
-        failure_rate=payload.failure_rate,
-        enabled_failures=payload.enabled_failures,
-        trigger_after_n_calls=payload.trigger_after_n_calls,
-        target_operation=payload.target_operation,
-    )
-    logger.info(
-        f"Updated failure configuration for service '{target}' (rate={injector.failure_rate}, op={injector.target_operation})",
-        event_type="failure_config_updated",
-        attributes={"service": target, "rate": injector.failure_rate, "target_operation": injector.target_operation},
-    )
-    return {
-        "status": "updated",
-        "target_service": target,
-        "target_operation": injector.target_operation,
-        "failure_rate": injector.failure_rate,
-        "enabled_failures": injector.enabled_failures,
-        "trigger_after_n_calls": injector.trigger_after_n_calls,
-    }
 
 
 @app.post("/api/checkout")
 async def checkout(payload: CheckoutRequest):
     """End-to-end checkout coordinating orders, inventory, payments, and notifications."""
-    failure_injector.inject_failure_if_needed("checkout")
+    if not payload.user_id:
+        raise HTTPException(
+            status_code=400,
+            detail="user_id is required for checkout",
+            headers={"x-error-code": "INVALID_USER_ID"},
+        )
 
-    total_amount = sum(item.quantity * item.unit_price for item in payload.items)
-    order_items = [{"sku": i.sku, "quantity": i.quantity} for i in payload.items]
+    if not payload.items:
+        raise HTTPException(
+            status_code=400,
+            detail="Order items list cannot be empty",
+            headers={"x-error-code": "EMPTY_ITEMS_LIST"},
+        )
+
+    # Calculate pricing
+    gross_amount = sum(item.quantity * item.unit_price for item in payload.items)
+
+    # Edge-case logic bug: Discount ratio calculation on zero subtotal
+    # When a promotional code is applied (e.g. ZERO_SUBTOTAL or free promotional item),
+    # an unhandled division by zero occurs if gross_amount is 0.0
+    if payload.discount_code:
+        discount_amount = 10.0 if payload.discount_code == "SAVE10" else 0.0
+        if payload.discount_code == "ZERO_SUBTOTAL":
+            discount_amount = gross_amount
+        # BUG: missing check for gross_amount > 0
+        discount_ratio = discount_amount / gross_amount
+
+    total_amount = max(0.0, round(gross_amount, 2))
+    order_items = [{"sku": i.sku, "quantity": i.quantity, "unit_price": i.unit_price} for i in payload.items]
 
     # 1. Dispatch order creation to Orders service
     orders_client = target_service_clients.get("orders")
@@ -143,19 +112,29 @@ async def checkout(payload: CheckoutRequest):
             "user_id": payload.user_id,
             "items": order_items,
             "total_amount": total_amount,
+            "currency": payload.currency,
         },
         client=orders_client,
     )
 
     if order_resp.status_code != 200:
+        err_code = order_resp.headers.get("x-error-code", f"HTTP_{order_resp.status_code}")
         logger.error(
-            f"Checkout aborted: Orders service returned {order_resp.status_code}",
-            event_type="error",
-            attributes={"status_code": order_resp.status_code, "response": order_resp.text},
+            f"Checkout aborted: Orders service returned status {order_resp.status_code} [{err_code}]",
+            event_type="downstream_call_failed",
+            error_code=err_code,
+            downstream_service="orders",
+            attributes={
+                "status_code": order_resp.status_code,
+                "downstream_service": "orders",
+                "error_code": err_code,
+                "response": order_resp.text[:200],
+            },
         )
-        raise HTTPException(
+        return JSONResponse(
             status_code=order_resp.status_code,
-            detail=f"Order creation failed: {order_resp.text}",
+            content=order_resp.json() if order_resp.headers.get("content-type", "").startswith("application/json") else {"detail": order_resp.text},
+            headers={"x-error-code": err_code},
         )
 
     order_data = order_resp.json()
@@ -169,21 +148,32 @@ async def checkout(payload: CheckoutRequest):
         json_data={
             "user_id": payload.user_id,
             "amount": total_amount,
-            "currency": "USD",
+            "currency": payload.currency,
             "order_id": order_id,
+            "payment_method": payload.payment_method,
         },
         client=payments_client,
     )
 
     if payment_resp.status_code != 200:
+        err_code = payment_resp.headers.get("x-error-code", f"HTTP_{payment_resp.status_code}")
         logger.error(
-            f"Checkout aborted: Payments service returned {payment_resp.status_code}",
-            event_type="error",
-            attributes={"order_id": order_id, "status_code": payment_resp.status_code},
+            f"Checkout aborted: Payments service returned status {payment_resp.status_code} [{err_code}]",
+            event_type="downstream_call_failed",
+            error_code=err_code,
+            downstream_service="payments",
+            attributes={
+                "order_id": order_id,
+                "status_code": payment_resp.status_code,
+                "downstream_service": "payments",
+                "error_code": err_code,
+                "response": payment_resp.text[:200],
+            },
         )
-        raise HTTPException(
+        return JSONResponse(
             status_code=payment_resp.status_code,
-            detail=f"Payment processing failed: {payment_resp.text}",
+            content=payment_resp.json() if payment_resp.headers.get("content-type", "").startswith("application/json") else {"detail": payment_resp.text},
+            headers={"x-error-code": err_code},
         )
 
     payment_data = payment_resp.json()
@@ -199,3 +189,19 @@ async def checkout(payload: CheckoutRequest):
         "order": order_data,
         "payment": payment_data,
     }
+
+
+@app.get("/api/orders/{order_id}")
+async def get_order_proxy(order_id: str):
+    """Proxy request to retrieve order details from Orders service."""
+    orders_client = target_service_clients.get("orders")
+    resp = await http_client.get(
+        url=f"{ORDERS_SERVICE_URL}/orders/{order_id}",
+        target_service="orders",
+        client=orders_client,
+    )
+    return JSONResponse(
+        status_code=resp.status_code,
+        content=resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {"detail": resp.text},
+        headers={"x-error-code": resp.headers.get("x-error-code", "")},
+    )

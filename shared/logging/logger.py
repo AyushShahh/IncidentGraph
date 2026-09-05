@@ -51,18 +51,32 @@ class StructuredEventLogger:
         level: str,
         message: str,
         event_type: str = "application_event",
+        error_code: Optional[str] = None,
         exception: Optional[Union[str, Exception]] = None,
         downstream_service: Optional[str] = None,
         attributes: Optional[dict[str, Any]] = None,
     ) -> LogEventSchema:
         """Construct a validated LogEventSchema record with ambient tracing context."""
+        attrs = dict(attributes) if attributes else {}
         exc_str: Optional[str] = None
+        
+        # Extract exception details and error code
         if isinstance(exception, Exception):
             exc_str = "".join(
                 traceback.format_exception(type(exception), exception, exception.__traceback__)
             )
+            attrs.setdefault("exception_type", type(exception).__name__)
+            if not error_code:
+                error_code = getattr(exception, "error_code", None)
+
         elif isinstance(exception, str):
             exc_str = exception
+
+        if not error_code and "error_code" in attrs:
+            error_code = str(attrs["error_code"])
+
+        if error_code:
+            attrs["error_code"] = error_code
 
         return LogEventSchema(
             timestamp=datetime.now(timezone.utc),
@@ -73,13 +87,14 @@ class StructuredEventLogger:
             session_id=get_session_id(),
             log_level=level.upper(),
             event_type=event_type,
+            error_code=error_code,
             message=message,
             exception=exc_str,
             upstream_service=get_upstream_service(),
             downstream_service=downstream_service,
             deployment_version=self.deployment_version,
             environment=self.environment,
-            attributes=attributes or {},
+            attributes=attrs,
         )
 
     def _emit(self, event: LogEventSchema) -> None:
@@ -103,6 +118,7 @@ class StructuredEventLogger:
         level: str,
         message: str,
         event_type: str = "application_event",
+        error_code: Optional[str] = None,
         exception: Optional[Union[str, Exception]] = None,
         downstream_service: Optional[str] = None,
         attributes: Optional[dict[str, Any]] = None,
@@ -112,6 +128,7 @@ class StructuredEventLogger:
             level=level,
             message=message,
             event_type=event_type,
+            error_code=error_code,
             exception=exception,
             downstream_service=downstream_service,
             attributes=attributes,

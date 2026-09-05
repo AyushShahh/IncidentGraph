@@ -51,6 +51,10 @@ class LogEventSchema(BaseModel):
         ...,
         description="Descriptive log message text",
     )
+    error_code: Optional[str] = Field(
+        default=None,
+        description="Machine-readable error code, e.g. ZERO_DIVISION_ERROR, INDEX_OUT_OF_BOUNDS, DB_POOL_EXHAUSTED",
+    )
     exception: Optional[str] = Field(
         default=None,
         description="Serialized stack trace or exception string if an error occurred",

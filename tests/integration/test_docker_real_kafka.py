@@ -158,36 +158,19 @@ async def test_real_failure_logs_received_in_kafka():
         await asyncio.sleep(1.0)
 
         async with httpx.AsyncClient(timeout=10.0) as client:
-            # 1. Configure Gateway to inject failure
-            cfg_resp = await client.post(
-                f"{GATEWAY_URL}/simulate-failure",
-                json={
-                    "target_service": "gateway",
-                    "failure_rate": 1.0,
-                    "enabled_failures": ["http_500"],
-                    "trigger_after_n_calls": 0,
-                },
-            )
-            assert cfg_resp.status_code == 200
-
-            # 2. Send checkout request that will fail
+            # Send checkout request that triggers real zero division edge case
             fail_resp = await client.post(
                 f"{GATEWAY_URL}/api/checkout",
                 headers={"x-trace-id": fail_trace_id},
                 json={
                     "user_id": "user-failure-test",
-                    "items": [{"sku": "SKU-100", "quantity": 1, "unit_price": 20.0}],
+                    "items": [{"sku": "SKU-PROMO", "quantity": 1, "unit_price": 0.0}],
+                    "discount_code": "ZERO_SUBTOTAL",
                 },
             )
             assert fail_resp.status_code == 500
 
-            # 3. Reset Gateway failure injector
-            await client.post(
-                f"{GATEWAY_URL}/simulate-failure",
-                json={"target_service": "gateway", "failure_rate": 0.0},
-            )
-
-        # 4. Consume from Kafka and look for error log
+        # Consume from Kafka and look for error log
         consumed_logs: list[dict] = []
         start_time = asyncio.get_event_loop().time()
         while asyncio.get_event_loop().time() - start_time < 8.0:
@@ -213,7 +196,8 @@ async def test_real_failure_logs_received_in_kafka():
         assert len(matching_errors) > 0, "Expected error log in Kafka for failed request"
         err_log = matching_errors[0]
         assert err_log["service_name"] == "gateway"
-        assert err_log["event_type"] in ["failure_simulation", "error"]
+        assert err_log.get("error_code") == "ZeroDivisionError"
+        assert "division by zero" in err_log.get("message", "")
 
     finally:
         await consumer.stop()

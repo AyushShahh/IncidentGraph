@@ -1,37 +1,36 @@
-"""Orders microservice for order placement and coordination."""
+"""Orders microservice managing order lifecycle and inventory reservation."""
 from contextlib import asynccontextmanager
 import os
 from typing import Any, AsyncGenerator
 import uuid
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from shared.logging.middleware import TraceCorrelationMiddleware
 from shared.logging.logger import get_service_logger
 from shared.kafka.producer import get_shared_kafka_producer
-from shared.failures.injector import (
-    get_shared_failure_injector,
-    FailureConfigRequest,
-    DatabaseTimeoutException,
-    NetworkTimeoutException,
-    RetryExhaustionException,
-)
 from shared.http_client import ServiceHttpClient
 
 SERVICE_NAME = "orders"
 
 logger = get_service_logger(SERVICE_NAME)
-failure_injector = get_shared_failure_injector(SERVICE_NAME)
 http_client = ServiceHttpClient(caller_service=SERVICE_NAME)
 
 INVENTORY_SERVICE_URL = os.getenv("INVENTORY_SERVICE_URL", "http://inventory:8004")
 NOTIFICATIONS_SERVICE_URL = os.getenv("NOTIFICATIONS_SERVICE_URL", "http://notifications:8005")
 
-# In-memory orders database
+# In-memory order datastore
 ORDERS: dict[str, dict[str, Any]] = {}
 
-# Test override client hook
+# Customer tier bonus multipliers for loyalty program
+CUSTOMER_TIERS = {
+    "STANDARD": 1.0,
+    "VIP": 1.5,
+    "GOLD": 2.0,
+}
+
+# Test override client hook for ASGITransport testing
 target_service_clients: dict[str, Any] = {}
 
 
@@ -56,109 +55,94 @@ app = FastAPI(title="Orders Service", version="0.1.0", lifespan=lifespan)
 app.add_middleware(TraceCorrelationMiddleware, service_name=SERVICE_NAME)
 
 
-@app.exception_handler(DatabaseTimeoutException)
-async def db_timeout_handler(request: Request, exc: DatabaseTimeoutException):
-    return JSONResponse(status_code=504, content={"detail": str(exc), "error": "database_timeout"})
-
-
-@app.exception_handler(NetworkTimeoutException)
-async def net_timeout_handler(request: Request, exc: NetworkTimeoutException):
-    return JSONResponse(status_code=504, content={"detail": str(exc), "error": "network_timeout"})
-
-
-@app.exception_handler(RetryExhaustionException)
-async def retry_exhaust_handler(request: Request, exc: RetryExhaustionException):
-    return JSONResponse(status_code=503, content={"detail": str(exc), "error": "retry_exhaustion"})
+class OrderItem(BaseModel):
+    sku: str
+    quantity: int = 1
+    unit_price: float = Field(default=25.0)
 
 
 class CreateOrderRequest(BaseModel):
     user_id: str
-    items: list[dict[str, Any]] = Field(..., description="List of items with sku and quantity")
-    total_amount: float = Field(..., gt=0)
+    items: list[OrderItem] = Field(..., min_length=1, description="List of items with sku and quantity")
+    total_amount: float = Field(..., ge=0)
+    currency: str = "USD"
 
 
 @app.get("/health")
 async def health():
     """Service healthcheck."""
-    failure_injector.inject_failure_if_needed("health")
     return {"status": "ok", "service": SERVICE_NAME}
-
-
-@app.post("/simulate-failure")
-async def configure_failure(payload: FailureConfigRequest):
-    """Configure failure injector settings at runtime."""
-    failure_injector.configure(
-        failure_rate=payload.failure_rate,
-        enabled_failures=payload.enabled_failures,
-        trigger_after_n_calls=payload.trigger_after_n_calls,
-        target_operation=payload.target_operation,
-    )
-    return {
-        "status": "updated",
-        "service": SERVICE_NAME,
-        "target_operation": failure_injector.target_operation,
-        "failure_rate": failure_injector.failure_rate,
-        "enabled_failures": failure_injector.enabled_failures,
-        "trigger_after_n_calls": failure_injector.trigger_after_n_calls,
-    }
-
-
-@app.get("/simulate-failure")
-async def get_failure_config():
-    """Return current failure injector settings."""
-    return {
-        "service": SERVICE_NAME,
-        "failure_rate": failure_injector.failure_rate,
-        "enabled_failures": failure_injector.enabled_failures,
-        "calls_recorded": failure_injector.call_count,
-        "trigger_after_n_calls": failure_injector.trigger_after_n_calls,
-    }
 
 
 @app.post("/orders")
 async def create_order(payload: CreateOrderRequest):
     """Place a new order, reserve inventory, and send confirmation."""
-    failure_injector.inject_failure_if_needed("create_order")
-
     order_id = f"ord-{uuid.uuid4().hex[:8]}"
+
+    # Logic Bug / Edge Case: Unhandled Customer Loyalty Tier lookup
+    # When user_id explicitly specifies a loyalty tier via "user-tier-{tier}-{id}" (e.g. user-tier-vip-101),
+    # it determines tier. If an unrecognized tier is supplied (e.g. user-tier-platinum-999),
+    # accessing CUSTOMER_TIERS[user_tier] raises a KeyError!
+    parts = payload.user_id.split("-")
+    if len(parts) >= 4 and parts[0] == "user" and parts[1] == "tier":
+        user_tier = parts[2].upper()
+        # BUG: missing dict.get(user_tier, 1.0) fallback
+        tier_multiplier = CUSTOMER_TIERS[user_tier]
+    else:
+        tier_multiplier = 1.0
+
+    loyalty_points = int(payload.total_amount * tier_multiplier)
 
     # 1. Call Inventory service to reserve items
     inv_client = target_service_clients.get("inventory")
+    inv_items = [{"sku": i.sku, "quantity": i.quantity} for i in payload.items]
     inv_resp = await http_client.post(
         url=f"{INVENTORY_SERVICE_URL}/inventory/reserve",
         target_service="inventory",
-        json_data={"items": payload.items},
+        json_data={"items": inv_items},
         client=inv_client,
     )
 
     if inv_resp.status_code != 200:
+        err_code = inv_resp.headers.get("x-error-code", f"HTTP_{inv_resp.status_code}")
         logger.error(
-            f"Failed to reserve inventory for order {order_id}: {inv_resp.text}",
-            event_type="error",
-            attributes={"status_code": inv_resp.status_code, "response": inv_resp.text},
+            f"Failed to reserve inventory for order {order_id}: {inv_resp.text} [{err_code}]",
+            event_type="downstream_call_failed",
+            error_code=err_code,
+            downstream_service="inventory",
+            attributes={
+                "order_id": order_id,
+                "status_code": inv_resp.status_code,
+                "downstream_service": "inventory",
+                "error_code": err_code,
+                "response": inv_resp.text[:200],
+            },
         )
-        raise HTTPException(
+        return JSONResponse(
             status_code=inv_resp.status_code,
-            detail=f"Inventory reservation failed: {inv_resp.text}",
+            content=inv_resp.json() if inv_resp.headers.get("content-type", "").startswith("application/json") else {"detail": inv_resp.text},
+            headers={"x-error-code": err_code},
         )
 
     # 2. Persist order record
     order_record = {
         "order_id": order_id,
         "user_id": payload.user_id,
-        "items": payload.items,
+        "items": [item.model_dump() for item in payload.items],
         "total_amount": payload.total_amount,
+        "currency": payload.currency,
+        "loyalty_points": loyalty_points,
         "status": "CONFIRMED",
     }
     ORDERS[order_id] = order_record
 
     logger.info(
-        f"Order {order_id} created successfully for user {payload.user_id}",
+        f"Order {order_id} created successfully for user {payload.user_id} (pts={loyalty_points})",
         event_type="order_created",
-        attributes={"order_id": order_id, "amount": payload.total_amount},
+        attributes={"order_id": order_id, "amount": payload.total_amount, "loyalty_points": loyalty_points},
     )
 
-    # 3. Call Notifications service
+    # 3. Call Notifications service (best-effort fire-and-forget alert)
     notif_client = target_service_clients.get("notifications")
     try:
         await http_client.post(
@@ -168,11 +152,17 @@ async def create_order(payload: CreateOrderRequest):
                 "recipient": payload.user_id,
                 "subject": "Order Confirmation",
                 "body": f"Your order {order_id} for ${payload.total_amount:.2f} is confirmed.",
+                "channel": "email",
+                "order_id": order_id,
             },
             client=notif_client,
         )
     except Exception as exc:
-        logger.warning(f"Could not send order confirmation alert: {exc}")
+        logger.warning(
+            f"Failed to dispatch order notification: {exc}",
+            event_type="notification_failed",
+            attributes={"order_id": order_id, "error": str(exc)},
+        )
 
     return order_record
 
@@ -180,8 +170,17 @@ async def create_order(payload: CreateOrderRequest):
 @app.get("/orders/{order_id}")
 async def get_order(order_id: str):
     """Retrieve order details by ID."""
-    failure_injector.inject_failure_if_needed("get_order")
     record = ORDERS.get(order_id)
     if not record:
-        raise HTTPException(status_code=404, detail="Order not found")
+        logger.warning(
+            f"Order {order_id} not found",
+            event_type="order_not_found",
+            error_code="ORDER_NOT_FOUND",
+            attributes={"order_id": order_id},
+        )
+        raise HTTPException(
+            status_code=404,
+            detail=f"Order '{order_id}' not found",
+            headers={"x-error-code": "ORDER_NOT_FOUND"},
+        )
     return record

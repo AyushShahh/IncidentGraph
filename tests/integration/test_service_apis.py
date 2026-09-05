@@ -100,23 +100,26 @@ async def test_gateway_checkout_end_to_end(service_network: dict[str, AsyncClien
 
 
 @pytest.mark.asyncio
-async def test_gateway_simulate_failure_endpoint(service_network: dict[str, AsyncClient]):
-    """Verify dynamic failure simulation configuration via Gateway API."""
+async def test_gateway_get_order_proxy_and_validation(service_network: dict[str, AsyncClient]):
+    """Verify order lookup proxy and input validation via Gateway."""
     gw_client = service_network["gateway"]
 
-    cfg_resp = await gw_client.post(
-        "/simulate-failure",
-        json={
-            "target_service": "gateway",
-            "failure_rate": 0.75,
-            "enabled_failures": ["http_500"],
-            "trigger_after_n_calls": 5,
-        },
-    )
-    assert cfg_resp.status_code == 200
-    assert cfg_resp.json()["failure_rate"] == 0.75
-    assert cfg_resp.json()["trigger_after_n_calls"] == 5
+    # 1. Validation error on empty items
+    bad_resp = await gw_client.post("/api/checkout", json={"user_id": "user-test", "items": []})
+    assert bad_resp.status_code == 400
+    assert bad_resp.headers.get("x-error-code") == "EMPTY_ITEMS_LIST"
 
-    status_resp = await gw_client.get("/api/status")
-    assert status_resp.status_code == 200
-    assert status_resp.json()["failure_rate"] == 0.75
+    # 2. Complete a valid order
+    checkout_payload = {
+        "user_id": "user-lookup-test",
+        "items": [{"sku": "SKU-100", "quantity": 1, "unit_price": 50.0}],
+    }
+    resp = await gw_client.post("/api/checkout", json=checkout_payload)
+    assert resp.status_code == 200
+    order_id = resp.json()["order"]["order_id"]
+
+    # 3. Retrieve order via gateway proxy
+    lookup_resp = await gw_client.get(f"/api/orders/{order_id}")
+    assert lookup_resp.status_code == 200
+    assert lookup_resp.json()["order_id"] == order_id
+    assert lookup_resp.json()["user_id"] == "user-lookup-test"

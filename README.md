@@ -88,30 +88,22 @@ Every log emitted by all microservices strictly conforms to the canonical `LogEv
 
 ---
 
-## 4. Configurable Failure Simulation
+## 4. Realistic Incident Simulation & Machine-Readable Error Codes
 
-Each microservice integrates `FailureInjector` (`shared/failures/injector.py`) supporting 5 failure modes:
-1. `database_timeout` (raises `DatabaseTimeoutException`, mapped to HTTP 504)
-2. `network_timeout` (raises `NetworkTimeoutException`, mapped to HTTP 504)
-3. `http_500` (raises `HTTPException(500)`)
-4. `authentication_failure` (raises `HTTPException(401)`)
-5. `retry_exhaustion` (raises `RetryExhaustionException`, mapped to HTTP 503)
+All artificial failure injection endpoints (`/simulate-failure`) and injector classes have been completely removed. Microservices behave as independent, production-grade services where failures stem naturally from realistic application code logic bugs, edge cases, and business exceptions.
 
-### Dynamic Runtime Reconfiguration
-Configure failures dynamically without restarting containers:
-```bash
-curl -X POST http://localhost:8001/simulate-failure \
-  -H "Content-Type: application/json" \
-  -d '{
-    "failure_rate": 0.5,
-    "enabled_failures": ["database_timeout", "http_500"],
-    "trigger_after_n_calls": 5,
-    "target_operation": "checkout"
-  }'
-```
-- **`target_operation`**: Target a specific endpoint operation (`"checkout"`, `"orders"`, `"health"`, etc.). By default, `/health` endpoints will **never** fail during generic failure simulation, preserving Docker health probes unless `target_operation: "health"` is explicitly specified.
-- **`trigger_after_n_calls`**: Ensures traffic initially succeeds before failure injection activates.
-- **`failure_rate`**: Configurable floating-point probability between `0.0` and `1.0`.
+### Machine-Readable Error Codes
+Every error log emitted to Kafka contains a stable machine-readable `error_code` so downstream AI incident agents can perform root cause analysis and code remediation without parsing arbitrary English text:
+
+| Service | Incident Trigger / Bug | Error Code | HTTP Status | Description |
+| :--- | :--- | :--- | :---: | :--- |
+| **Gateway** | Zero subtotal sample checkout | `ZeroDivisionError` | `500` | Division by zero in promotional discount calculation |
+| **Orders** | Unrecognized customer tier | `KeyError` | `500` | Direct indexing on missing loyalty tier (e.g. `user-platinum-*`) |
+| **Inventory** | Bulk order reservation (> 3 items) | `IndexError` | `500` | Off-by-one boundary error in multi-item warehouse batching |
+| **Payments** | Unsupported currency lookup | `KeyError` | `500` | Missing currency in exchange rate map (e.g. `GBP`) |
+| **Payments** | Card declined by issuing bank | `PAYMENT_DECLINED` | `402` | Natural business decline when payment method is `card_declined` |
+| **Inventory** | Insufficient SKU stock | `OUT_OF_STOCK` | `409` | Requested quantity exceeds available catalog inventory |
+| **Notifications**| Missing phone on SMS alert | `KeyError` | `500` | Unhandled phone number key lookup on SMS dispatch |
 
 ---
 
@@ -168,7 +160,7 @@ Two test suites are maintained and run entirely within Docker without host virtu
 ### Suite 1: Fast Integration & Unit Tests (ASGITransport)
 Runs in-memory across the 5 microservices using `ASGITransport` and Kafka test spies:
 ```bash
-docker compose run --rm test-runner pytest tests/unit tests/integration/test_service_apis.py tests/integration/test_trace_propagation.py tests/integration/test_failure_simulation.py tests/integration/test_health_logging.py -v
+docker compose run --rm test-runner pytest tests/unit tests/integration/test_service_apis.py tests/integration/test_trace_propagation.py tests/integration/test_realistic_incidents.py tests/integration/test_health_logging.py -v
 ```
 Or via Makefile:
 ```bash
@@ -183,46 +175,45 @@ docker compose run --rm test-runner pytest tests/integration/test_docker_real_ka
 
 ---
 
-## 7. Traffic Generation & Verification
+## 7. Production Traffic Simulator
 
-### Generate Realistic Traffic
-Generate load through the API Gateway:
+A production-grade traffic simulator generates continuous, realistic user checkouts and real edge-case failures through the Gateway API.
+
+### Run Traffic Simulator
 ```bash
 # Inside Docker test runner:
-docker compose run --rm test-runner python scripts/generate_traffic.py --gateway-url http://gateway:8001 --rate 5 --duration 10
+docker compose run --rm test-runner python scripts/generate_traffic.py --gateway-url http://gateway:8001 --scenario mixed_incident --rate 5 --duration 10
 
-# Or from the host machine:
-python scripts/generate_traffic.py --gateway-url http://localhost:8001 --rate 5 --duration 10
+# Or from host machine:
+python scripts/generate_traffic.py --gateway-url http://localhost:8001 --scenario mixed_incident --rate 5 --duration 10
 ```
 
-CLI options:
-- `--rate`: Requests per second (default: 5)
-- `--duration`: Total test duration in seconds (default: 10)
-- `--failure-rate`: Failure rate from 0.0 to 1.0 (default: 0.0)
-- `--trigger-after`: Number of successful requests before failures start (default: 0)
-- `--burst-size`: Concurrency burst size (default: 1)
-- `--gateway-url`: API Gateway URL
+### Supported Scenarios (`--scenario`)
+- `mixed_incident`: Realistic distribution of 85% normal checkouts and 15% intermittent edge-case bugs.
+- `zero_division`: Promotional code `ZERO_SUBTOTAL` triggering Gateway `ZeroDivisionError`.
+- `inventory_batch_overflow`: Multi-item bulk reservation triggering Inventory `IndexError`.
+- `currency_lookup_error`: Unhandled foreign currency (`GBP`) triggering Payments `KeyError`.
+- `customer_tier_error`: Unrecognized tier (`user-platinum-*`) triggering Orders `KeyError`.
+- `payment_declines`: Natural card authorization declines (`402 PAYMENT_DECLINED`).
+- `normal`: 100% successful standard checkout transactions.
 
-### Manual Kafka Log Verification
-Consume real messages directly from the Kafka broker container to inspect the JSON schema and distributed trace IDs:
+### Simulator CLI Options
+- `--scenario`: Incident scenario preset (default: `mixed_incident`)
+- `--rate`: Target requests per second (default: `5.0`)
+- `--duration`: Total execution duration in seconds (default: `10.0`)
+- `--failure-rate`: Failure probability during incident phase (default: `0.15`)
+- `--warmup`: Warm-up seconds of pure normal traffic before failures start (default: `2.0`)
+- `--seed`: Integer seed for reproducible pseudo-random generation
+- `--burst-size`: Concurrent requests per interval (default: `1`)
+
+### Inspect Real Kafka Logs
+Consume messages directly from the broker to inspect the canonical schema, trace IDs, and machine-readable `error_code` fields:
 ```bash
 docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
   --bootstrap-server localhost:29092 \
   --topic service-logs \
   --from-beginning \
-  --max-messages 5
-```
-
-### Manual Failure Verification
-Trigger a 100% failure rate on the Orders service via the Gateway and observe the resulting failure logs in Kafka:
-```bash
-curl -X POST http://localhost:8001/simulate-failure \
-  -H "Content-Type: application/json" \
-  -d '{"target_service": "orders", "failure_rate": 1.0, "enabled_failures": ["http_500"]}'
-
-curl -X POST http://localhost:8001/api/checkout \
-  -H "Content-Type: application/json" \
-  -d '{"user_id": "test-user", "items": [{"sku": "SKU-100", "quantity": 1, "unit_price": 20.0}]}'
+  --max-messages 10
 ```
 
 ---

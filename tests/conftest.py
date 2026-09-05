@@ -7,12 +7,11 @@ import pytest_asyncio
 import httpx
 
 from services.gateway.main import app as gateway_app, target_service_clients as gw_clients
-from services.orders.main import app as orders_app, target_service_clients as ord_clients
-from services.payments.main import app as payments_app, target_service_clients as pay_clients
-from services.inventory.main import app as inventory_app
-from services.notifications.main import app as notifications_app
+from services.orders.main import app as orders_app, target_service_clients as ord_clients, ORDERS
+from services.payments.main import app as payments_app, target_service_clients as pay_clients, TRANSACTIONS
+from services.inventory.main import app as inventory_app, STOCK_STORE, DEFAULT_STOCK
+from services.notifications.main import app as notifications_app, NOTIFICATION_HISTORY
 from shared.kafka.producer import get_shared_kafka_producer
-from shared.failures.injector import get_shared_failure_injector, FailureInjector
 from shared.schemas.log_event import LogEventSchema
 
 
@@ -38,19 +37,20 @@ def kafka_spy():
 
 @pytest.fixture(autouse=True)
 def reset_global_state():
-    """Reset failure injectors before and after each test."""
-    services = ["gateway", "orders", "payments", "inventory", "notifications", "generic"]
-    for svc in services:
-        inj = get_shared_failure_injector(svc)
-        inj.configure(failure_rate=0.0, enabled_failures=list(FailureInjector.ALL_FAILURES), trigger_after_n_calls=0)
-        inj.reset_counts()
+    """Reset in-memory datastores before and after each test to ensure test isolation."""
+    STOCK_STORE.clear()
+    STOCK_STORE.update(DEFAULT_STOCK)
+    ORDERS.clear()
+    TRANSACTIONS.clear()
+    NOTIFICATION_HISTORY.clear()
 
     yield
 
-    for svc in services:
-        inj = get_shared_failure_injector(svc)
-        inj.configure(failure_rate=0.0)
-        inj.reset_counts()
+    STOCK_STORE.clear()
+    STOCK_STORE.update(DEFAULT_STOCK)
+    ORDERS.clear()
+    TRANSACTIONS.clear()
+    NOTIFICATION_HISTORY.clear()
 
 
 @pytest_asyncio.fixture

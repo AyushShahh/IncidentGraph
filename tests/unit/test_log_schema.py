@@ -19,6 +19,7 @@ def test_log_event_schema_all_15_fields():
         log_level="ERROR",
         event_type="db_query",
         message="Database connection pool timeout",
+        error_code="DB_POOL_TIMEOUT",
         exception="ConnectionTimeoutException: Unable to acquire connection within 5000ms",
         attributes={"pool_size": 20, "active_connections": 20},
         upstream_service="gateway",
@@ -35,6 +36,7 @@ def test_log_event_schema_all_15_fields():
     assert event.session_id == "sess-abc"
     assert event.log_level == "ERROR"
     assert event.event_type == "db_query"
+    assert event.error_code == "DB_POOL_TIMEOUT"
     assert event.message == "Database connection pool timeout"
     assert event.exception is not None
     assert event.upstream_service == "gateway"
@@ -43,7 +45,7 @@ def test_log_event_schema_all_15_fields():
     assert event.environment == "production"
     assert event.attributes["pool_size"] == 20
 
-    # Validate JSON serialization contains all 15 keys
+    # Validate JSON serialization contains all keys
     serialized = json.loads(event.model_dump_json())
     canonical_keys = [
         "timestamp",
@@ -54,6 +56,7 @@ def test_log_event_schema_all_15_fields():
         "session_id",
         "log_level",
         "event_type",
+        "error_code",
         "message",
         "exception",
         "attributes",
@@ -63,7 +66,7 @@ def test_log_event_schema_all_15_fields():
         "environment",
     ]
     for key in canonical_keys:
-        assert key in serialized, f"Missing canonical field '{key}' in serialized log JSON"
+        assert key in serialized, f"Missing field '{key}' in serialized log JSON"
 
 
 def test_log_event_schema_defaults():
