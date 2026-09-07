@@ -1,5 +1,5 @@
 """Kafka messaging integration module."""
-from backend.kafka.producer import KafkaProducerService, get_kafka_producer
 from backend.kafka.consumer import KafkaConsumerService
+from backend.kafka.clustering_consumer import KafkaBatchClusteringConsumer
 
-__all__ = ["KafkaProducerService", "get_kafka_producer", "KafkaConsumerService"]
+__all__ = ["KafkaConsumerService", "KafkaBatchClusteringConsumer"]

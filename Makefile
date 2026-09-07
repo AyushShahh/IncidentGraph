@@ -29,6 +29,9 @@ test: test-fast
 test-fast:
 	docker compose run --rm test-runner pytest tests/unit tests/integration/test_service_apis.py tests/integration/test_trace_propagation.py tests/integration/test_realistic_incidents.py tests/integration/test_health_logging.py -v
 
+test-stage2:
+	docker compose run --rm test-runner pytest tests/unit/test_stage2_*.py tests/integration/test_stage2_clustering_pipeline.py -v
+
 test-real:
 	docker compose run --rm test-runner pytest tests/integration/test_docker_real_kafka.py -v
 

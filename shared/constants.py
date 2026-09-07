@@ -32,5 +32,6 @@ class IncidentSeverity(StrEnum):
 
 
 # Qdrant collection names
+QDRANT_ACTIVE_INCIDENTS_COLLECTION = "active_incident_candidates"
 QDRANT_INCIDENT_COLLECTION = "incident_resolutions"
 QDRANT_CODE_COLLECTION = "repository_code"

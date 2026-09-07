@@ -95,6 +95,8 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       ORDERS_SERVICE_URL: http://orders:8002
       PAYMENTS_SERVICE_URL: http://payments:8003
+    volumes:
+      - ./shared:/app/shared
     depends_on:
       kafka:
         condition: service_healthy
@@ -122,6 +124,8 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       INVENTORY_SERVICE_URL: http://inventory:8004
       NOTIFICATIONS_SERVICE_URL: http://notifications:8005
+    volumes:
+      - ./shared:/app/shared
     depends_on:
       kafka:
         condition: service_healthy
@@ -147,6 +151,8 @@ services:
     environment:
       SERVICE_NAME: inventory
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    volumes:
+      - ./shared:/app/shared
     depends_on:
       kafka:
         condition: service_healthy
@@ -173,6 +179,8 @@ services:
       SERVICE_NAME: payments
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       NOTIFICATIONS_SERVICE_URL: http://notifications:8005
+    volumes:
+      - ./shared:/app/shared
     depends_on:
       kafka:
         condition: service_healthy
@@ -198,6 +206,8 @@ services:
     environment:
       SERVICE_NAME: notifications
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    volumes:
+      - ./shared:/app/shared
     depends_on:
       kafka:
         condition: service_healthy
@@ -256,6 +266,59 @@ services:
     networks:
       - app-network
 
+  # Celery Asynchronous Worker (Stage 2 Incident Clustering)
+  celery-worker:
+    image: ai-incident-platform-backend
+    container_name: celery-worker
+    restart: unless-stopped
+    command: celery -A backend.tasks.celery_app worker --loglevel=info --concurrency=1
+    env_file:
+      - .env
+    environment:
+      SERVICE_NAME: celery-worker
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ayush}:${POSTGRES_PASSWORD:-ayushshah}@postgres:5432/${POSTGRES_DB:-incident_db}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      QDRANT_HOST: qdrant
+    volumes:
+      - ./backend:/app/backend
+      - ./shared:/app/shared
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  # Streaming Kafka Batch Consumer (Stage 2 Ingestion)
+  clustering-consumer:
+    image: ai-incident-platform-backend
+    container_name: clustering-consumer
+    restart: unless-stopped
+    command: python -m backend.kafka.clustering_consumer
+    env_file:
+      - .env
+    environment:
+      SERVICE_NAME: clustering-consumer
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    volumes:
+      - ./backend:/app/backend
+      - ./shared:/app/shared
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - app-network
+
   # Test Runner Service (For executing integration test suite inside Docker)
   test-runner:
     image: ai-incident-platform-backend
@@ -275,6 +338,11 @@ services:
       INVENTORY_SERVICE_URL: http://inventory:8004
       NOTIFICATIONS_SERVICE_URL: http://notifications:8005
       BACKEND_URL: http://backend:8000
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ayush}:${POSTGRES_PASSWORD:-ayushshah}@postgres:5432/${POSTGRES_DB:-incident_db}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      QDRANT_HOST: qdrant
     volumes:
       - ./tests:/app/tests
       - ./shared:/app/shared
@@ -283,6 +351,12 @@ services:
       - ./scripts:/app/scripts
     depends_on:
       kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
         condition: service_healthy
     networks:
       - app-network

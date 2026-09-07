@@ -88,46 +88,19 @@ class TraceCorrelationMiddleware(BaseHTTPMiddleware):
                     )
                 return response
 
-            # Standard request/response logging for non-health endpoints
-            if response.status_code >= 500:
-                error_code = response.headers.get("x-error-code") or f"HTTP_{response.status_code}"
-                self.logger.error(
-                    f"Server error on {request.method} {request.url.path}: status {response.status_code} in {duration_ms}ms [{error_code}]",
-                    event_type="http_response_error",
-                    error_code=error_code,
-                    attributes={
-                        "status_code": response.status_code,
-                        "duration_ms": duration_ms,
-                        "error_code": error_code,
-                        "path": request.url.path,
-                        "method": request.method,
-                    },
-                )
-            elif response.status_code >= 400:
-                error_code = response.headers.get("x-error-code") or f"HTTP_{response.status_code}"
-                self.logger.warning(
-                    f"Client error on {request.method} {request.url.path}: status {response.status_code} in {duration_ms}ms [{error_code}]",
-                    event_type="http_response_warning",
-                    error_code=error_code,
-                    attributes={
-                        "status_code": response.status_code,
-                        "duration_ms": duration_ms,
-                        "error_code": error_code,
-                        "path": request.url.path,
-                        "method": request.method,
-                    },
-                )
-            else:
-                self.logger.info(
-                    f"Completed {request.method} {request.url.path} with status {response.status_code} in {duration_ms}ms",
-                    event_type="http_response",
-                    attributes={
-                        "status_code": response.status_code,
-                        "duration_ms": duration_ms,
-                        "path": request.url.path,
-                        "method": request.method,
-                    },
-                )
+            # Standard HTTP access logging for non-health endpoints (emitted at INFO as standard access telemetry)
+            error_code = response.headers.get("x-error-code") if response.status_code >= 400 else None
+            self.logger.info(
+                f"HTTP {response.status_code} {request.method} {request.url.path} in {duration_ms}ms" + (f" [{error_code}]" if error_code else ""),
+                event_type="http_access",
+                attributes={
+                    "status_code": response.status_code,
+                    "duration_ms": duration_ms,
+                    "error_code": error_code,
+                    "path": request.url.path,
+                    "method": request.method,
+                },
+            )
             return response
 
         except Exception as exc:

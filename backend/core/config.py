@@ -39,6 +39,37 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
     OPENAI_API_KEY: str | None = None
 
+    # Celery & Queue Settings
+    CELERY_BROKER_URL: str = "redis://localhost:6379/1"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
+    CELERY_WORKER_CONCURRENCY: int = 1
+
+    # Stage 2: Batch Clustering & Consumer Settings
+    KAFKA_BATCH_SIZE: int = 500
+    KAFKA_BATCH_INTERVAL_SECONDS: float = 10.0
+    MONITORED_LOG_LEVELS: str = "ERROR,WARNING"
+
+    # Stage 2: Deduplication & Similarity Settings
+    SIMILARITY_THRESHOLD: float = 0.85
+    REDIS_FINGERPRINT_TTL_SECONDS: int = 172800  # 2 days
+
+    # Stage 2: Pluggable Embeddings Settings
+    EMBEDDING_PROVIDER: str = "sentence-transformers"  # "sentence-transformers", "gemini", "ollama"
+    GEMINI_API_KEY: str | None = None
+    GEMINI_EMBEDDING_MODEL: str = "models/text-embedding-004"
+    OLLAMA_BASE_URL: str = "http://host.docker.internal:11434"
+    OLLAMA_EMBEDDING_MODEL: str = "nomic-embed-text"
+
+    # Stage 2: HDBSCAN Clustering Settings
+    HDBSCAN_MIN_CLUSTER_SIZE: int = 2
+    HDBSCAN_MIN_SAMPLES: int = 1
+    HDBSCAN_CLUSTER_SELECTION_EPSILON: float = 0.0
+    HDBSCAN_MAX_CLUSTER_DISTANCE: float = 0.85
+
+    @property
+    def monitored_log_levels_set(self) -> set[str]:
+        return {lvl.strip().upper() for lvl in self.MONITORED_LOG_LEVELS.split(",") if lvl.strip()}
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

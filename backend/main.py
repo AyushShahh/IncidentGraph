@@ -75,6 +75,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Fail fast if dependencies are unavailable
     await verify_infrastructure_connections()
 
+    # Ensure database schema exists for Incidents and Candidates
+    from backend.db.base import Base
+    import backend.models  # registers Incident and IncidentCandidate
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Database schema initialized successfully.")
+    except Exception as exc:
+        logger.error("Failed to initialize database schema: %s", exc)
+        raise
+
+    # Ensure Qdrant vector collections exist
+    from backend.qdrant.client import init_collections
+    try:
+        await init_collections(vector_dim=384)
+        logger.info("Qdrant collections initialized successfully.")
+    except Exception as exc:
+        logger.error("Failed to initialize Qdrant collections: %s", exc)
+        raise
+
     yield
 
     logger.info("Shutting down %s...", settings.PROJECT_NAME)

@@ -218,8 +218,145 @@ docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
 
 ---
 
-## 8. Stage 2 Ready Boundaries
+---
 
-Stage 1 clean boundaries are established. When proceeding to Stage 2 (Log clustering and deduplication):
-- Consume structured logs directly from Kafka topic `service-logs`.
-- Ingest into HDBSCAN semantic clusterer without changing any microservice contracts.
+# Stage 2 – Incident Clustering & Deduplication
+
+Stage 2 implements a streaming incident clustering and deduplication pipeline that consumes structured logs from Kafka, filters actionable errors (`ERROR`/`WARNING`), collapses repeated failures into incident candidates, utilizes Redis for high-speed active fingerprint lookups, leverages Qdrant for semantic similarity search, uses Celery workers with Redis queues for asynchronous batch processing, applies HDBSCAN density clustering on novel candidate pools, and persists all incidents in PostgreSQL as the single source of truth.
+
+---
+
+## 1. Stage 2 Architecture
+
+```mermaid
+flowchart TD
+    K[Kafka Topic: service-logs] -->|Stream Logs| KC[ClusteringLogConsumer]
+    KC -->|Filter: ERROR, WARNING| BB{Batch Flush: 500 logs or 10s}
+    BB -->|Enqueue Task| RQ[(Redis Broker: Celery Queue db 1)]
+    
+    RQ -->|Pop Batch| CW[Celery Worker: process_log_batch_task]
+    CW --> NORM[1. Log Normalizer: strip dynamic variables]
+    NORM --> DEDUP[2. Batch Deduplication: aggregate counts & sample traces]
+    DEDUP --> CAND[3. Build IncidentCandidate Objects]
+    
+    CAND --> FP_CHK{4. Redis Fingerprint Lookup: incident:fp:hash}
+    FP_CHK -->|Hit: Active Fingerprint| UPD_INC[Update Incident in PostgreSQL: +count, last_seen]
+    UPD_INC --> DONE1[Done: 0 Embedding Cost]
+    
+    FP_CHK -->|Miss: Novel Candidate| BATCH_EMB[5. Batch Generate Embeddings]
+    BATCH_EMB --> QDR_SIM{6. Qdrant Similarity Search >= 0.85}
+    
+    QDR_SIM -->|Match: Semantic Duplicate| ATT_INC[Attach Candidate to Existing Incident in PostgreSQL]
+    ATT_INC --> IDX_REDIS1[Index Fingerprint in Redis]
+    ATT_INC --> IDX_QDR1[Store Embedding in Qdrant active_incident_candidates]
+    ATT_INC --> DONE2[Done: Prevent Duplicate Incidents]
+    
+    QDR_SIM -->|No Match| POOL[7. Temporary Batch Candidate Pool]
+    POOL --> HDBSCAN[8. HDBSCAN Density Clustering: min_cluster_size=2]
+    
+    HDBSCAN --> CREATE_INC[9. Create Incidents in PostgreSQL: Clusters + Singletons]
+    CREATE_INC --> IDX_REDIS2[Index Fingerprints in Redis]
+    CREATE_INC --> IDX_QDR2[Insert Vectors & Payload into Qdrant]
+```
+
+---
+
+## 2. Core Components & Responsibilities
+
+### PostgreSQL (Single Source of Truth)
+- **`incidents`**: Represents clustered failures. Stores `id`, `title`, `status` (`ACTIVE`, `RESOLVED`), `severity`, `primary_service`, `affected_services`, `total_occurrences`, `first_seen`, `last_seen`, `representative_log`, and timestamps.
+- **`incident_candidates`**: Stores individual deduplicated candidate patterns belonging to an incident, including `fingerprint`, `service_name`, `error_code`, `event_type`, `normalized_text`, `occurrence_count`, `first_seen`, `last_seen`, and `sample_trace_ids`.
+
+### Redis (Active Fingerprint Index)
+- High-speed lookup mapping: `incident:fp:{sha256_hash} -> incident_id`.
+- Configurable TTL (default: 2 days / 172800s).
+- Entries exist strictly while an incident is active. No complete incident or log data is stored in Redis.
+
+### Qdrant (Semantic Similarity Index)
+- Collection: `active_incident_candidates`.
+- Stores 384-dimensional dense vectors of active candidate text representations with payload (`incident_id`, `candidate_id`, `fingerprint`, `service_name`, `error_code`, `timestamp`).
+- Queried with cosine distance threshold $\ge 0.85$.
+
+### Celery Worker Queue
+- Dedicated background worker (`celery-worker`) consuming from Redis queue (`redis://redis:6379/1`).
+- Isolates CPU/GPU-intensive embedding generation, HDBSCAN clustering, and vector search from the ingestion stream.
+
+### Continuous Kafka Consumer
+- Dedicated streaming consumer (`clustering-consumer`) polling `service-logs`.
+- Batches actionable logs on count (`N=500`) or time interval (`T=10.0s`), whichever triggers first.
+- Emits task `process_log_batch_task.delay(batch)`.
+
+---
+
+## 3. Pluggable Embedding Providers
+
+Configured via `EMBEDDING_PROVIDER` in `.env`:
+- **`sentence-transformers`** (default): Local `all-MiniLM-L6-v2` model running within Docker container (384 dimensions, zero API cost).
+- **`ollama`**: Pluggable provider for local/remote Ollama servers (`OLLAMA_BASE_URL`, `OLLAMA_EMBEDDING_MODEL`).
+- **`gemini`**: Pluggable provider for Google Generative AI embeddings (`GEMINI_API_KEY`, `GEMINI_EMBEDDING_MODEL`).
+
+---
+
+## 4. REST API Endpoints
+
+The platform exposes incident inspection APIs under `/api/v1/incidents`:
+
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` | `/api/v1/incidents` | List incidents with optional `status`, `service`, `limit`, `offset` filters |
+| `GET` | `/api/v1/incidents/{id}` | Detailed incident view with all candidate patterns and sample trace IDs |
+| `GET` | `/api/v1/incidents/stats/summary` | Aggregated metrics: active/resolved counts, total occurrences, service breakdown |
+| `POST` | `/api/v1/incidents/{id}/resolve` | Mark incident as `RESOLVED`, prune Redis fingerprints, and purge Qdrant vectors |
+
+---
+
+## 5. How to Run and Verify Stage 2
+
+### Step 1: Start All Services in Docker
+```bash
+make up
+# Or:
+docker compose up -d
+```
+Verify running containers (`postgres`, `redis`, `kafka`, `qdrant`, `backend`, `celery-worker`, `clustering-consumer`, `gateway`, `orders`, `inventory`, `payments`, `notifications`):
+```bash
+make ps
+```
+
+### Step 2: Run Automated Stage 2 Tests
+Execute the comprehensive unit and integration test suites inside the Docker test runner:
+```bash
+make test-stage2
+```
+Or directly:
+```bash
+docker compose run --rm test-runner pytest tests/unit/test_stage2_*.py tests/integration/test_stage2_clustering_pipeline.py -v
+```
+
+### Step 3: End-to-End Live Verification with Real Traffic
+1. **Send simulated realistic traffic through Gateway**:
+   ```bash
+   docker compose run --rm test-runner python scripts/generate_traffic.py --gateway-url http://gateway:8001 --scenario mixed_incident --rate 10 --duration 15
+   ```
+2. **Observe continuous consumer logs**:
+   ```bash
+   docker compose logs --tail 30 clustering-consumer
+   ```
+3. **Observe Celery worker clustering batches**:
+   ```bash
+   docker compose logs --tail 30 celery-worker
+   ```
+4. **Query Incidents REST API**:
+   ```bash
+   curl http://localhost:8000/api/v1/incidents
+   curl http://localhost:8000/api/v1/incidents/stats/summary
+   ```
+5. **Inspect active Redis fingerprints**:
+   ```bash
+   docker compose exec redis redis-cli keys "incident:fp:*"
+   ```
+6. **Inspect Qdrant vectors**:
+   ```bash
+   curl http://localhost:6333/collections/active_incident_candidates
+   ```
+
