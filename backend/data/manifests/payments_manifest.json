@@ -1,0 +1,42 @@
+{
+  "service_name": "payments",
+  "root_path": "/app/services/payments",
+  "last_indexed_at": "2026-09-09T18:51:31.325105+00:00",
+  "file_count": 4,
+  "total_chunks": 30,
+  "total_symbols": 8,
+  "files": {
+    "Dockerfile": {
+      "file_path": "Dockerfile",
+      "sha256_hash": "c61f6f24e2895e2f9c4a47f456d89eef29f40ad996bb5200ce138ea84fa61844",
+      "last_modified": 1788601450.4702213,
+      "file_size_bytes": 369,
+      "chunk_count": 1,
+      "symbol_count": 0
+    },
+    "README.md": {
+      "file_path": "README.md",
+      "sha256_hash": "5adbda5645e411324cf61f1f6d1f56a1b82637e0f95d8f272882a412c608eca5",
+      "last_modified": 1788887682.4922097,
+      "file_size_bytes": 4093,
+      "chunk_count": 12,
+      "symbol_count": 0
+    },
+    "__init__.py": {
+      "file_path": "__init__.py",
+      "sha256_hash": "7d1b6f0318203636fb123c0faf613cdf3cfbcf6a5c8f9b3ebd1deec178e9c889",
+      "last_modified": 1788534975.4779303,
+      "file_size_bytes": 29,
+      "chunk_count": 1,
+      "symbol_count": 0
+    },
+    "main.py": {
+      "file_path": "main.py",
+      "sha256_hash": "1714bdbf5f9d3c50343a04352e61c822d2a8e525d4b718a3cce6406bb2ce36e5",
+      "last_modified": 1788979653.9945252,
+      "file_size_bytes": 5629,
+      "chunk_count": 16,
+      "symbol_count": 8
+    }
+  }
+}

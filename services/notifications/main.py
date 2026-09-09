@@ -60,11 +60,8 @@ async def send_notification(payload: SendNotificationRequest):
             headers={"x-error-code": "INVALID_RECIPIENT"},
         )
 
-    # Logic Bug / Edge Case: Unhandled metadata key lookup on SMS channel
-    # When channel is "sms", the service attempts to route through SMS gateway requiring phone_number.
-    # If the caller provides channel="sms" without metadata["phone_number"], direct key lookup raises KeyError!
+    # sms
     if payload.channel == "sms":
-        # BUG: missing payload.metadata.get("phone_number")
         phone = payload.metadata["phone_number"]
         dispatch_target = phone
     else:

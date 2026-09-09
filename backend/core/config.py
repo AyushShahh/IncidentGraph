@@ -66,6 +66,12 @@ class Settings(BaseSettings):
     HDBSCAN_CLUSTER_SELECTION_EPSILON: float = 0.0
     HDBSCAN_MAX_CLUSTER_DISTANCE: float = 0.85
 
+    # Stage 3: Repository Intelligence & Context Engine Settings
+    REPOSITORIES_ROOT_DIR: str = "services"
+    MANIFESTS_STORAGE_DIR: str = "backend/data/manifests"
+    STAGE3_CODE_CHUNK_LINES: int = 80
+    STAGE3_MAX_CONTEXT_TOKENS: int = 3500
+
     @property
     def monitored_log_levels_set(self) -> set[str]:
         return {lvl.strip().upper() for lvl in self.MONITORED_LOG_LEVELS.split(",") if lvl.strip()}

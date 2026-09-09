@@ -242,6 +242,7 @@ services:
     volumes:
       - ./backend:/app/backend
       - ./shared:/app/shared
+      - ./services:/app/services:ro
     deploy:
       resources:
         reservations:

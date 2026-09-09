@@ -2,8 +2,11 @@
 from fastapi import APIRouter
 from backend.api.v1 import health
 from backend.api.v1 import incidents
+from backend.api.v1 import repository
 
 api_router = APIRouter()
 
 api_router.include_router(health.router, prefix="/health", tags=["Health"])
 api_router.include_router(incidents.router, prefix="/incidents", tags=["Incidents"])
+api_router.include_router(repository.router, prefix="/repositories", tags=["Repository Intelligence"])
+api_router.include_router(repository.context_router, prefix="/context", tags=["Context Engine"])

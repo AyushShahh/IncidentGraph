@@ -96,10 +96,7 @@ async def charge_payment(payload: ChargeRequest):
             headers={"x-error-code": "TRANSACTION_LIMIT_EXCEEDED"},
         )
 
-    # 2. Logic Bug / Edge Case: Unhandled currency exchange rate lookup
-    # The developer hardcoded exchange rates for USD and EUR.
-    # When orders request other currencies (e.g. GBP, JPY, CAD), direct indexing raises KeyError!
-    # BUG: missing EXCHANGE_RATES.get(payload.currency)
+    # Currency exchange rate thing
     rate = EXCHANGE_RATES[payload.currency]
     usd_amount = round(payload.amount * rate, 2)
 

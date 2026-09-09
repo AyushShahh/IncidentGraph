@@ -90,9 +90,7 @@ async def checkout(payload: CheckoutRequest):
     # Calculate pricing
     gross_amount = sum(item.quantity * item.unit_price for item in payload.items)
 
-    # Edge-case logic bug: Discount ratio calculation on zero subtotal
-    # When a promotional code is applied (e.g. ZERO_SUBTOTAL or free promotional item),
-    # an unhandled division by zero occurs if gross_amount is 0.0
+    # Discount thing
     if payload.discount_code:
         discount_amount = 10.0 if payload.discount_code == "SAVE10" else 0.0
         if payload.discount_code == "ZERO_SUBTOTAL":

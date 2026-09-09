@@ -1,0 +1,42 @@
+{
+  "service_name": "orders",
+  "root_path": "/app/services/orders",
+  "last_indexed_at": "2026-09-09T18:51:31.253778+00:00",
+  "file_count": 4,
+  "total_chunks": 33,
+  "total_symbols": 10,
+  "files": {
+    "Dockerfile": {
+      "file_path": "Dockerfile",
+      "sha256_hash": "0fbe621b64945ac8544d4e937eb893a0e6e1fa6a7a2d67d5d61c3377ba5f53ad",
+      "last_modified": 1788601426.6880805,
+      "file_size_bytes": 363,
+      "chunk_count": 1,
+      "symbol_count": 0
+    },
+    "README.md": {
+      "file_path": "README.md",
+      "sha256_hash": "85652f84321c48b7cc0da765bca10814ba1960c2dc8f16a6506252707c636470",
+      "last_modified": 1788887655.9388444,
+      "file_size_bytes": 4512,
+      "chunk_count": 12,
+      "symbol_count": 0
+    },
+    "__init__.py": {
+      "file_path": "__init__.py",
+      "sha256_hash": "62a1d5dce3850dc66152c62f5484745ef0472c89279792119ec1779e82e85e14",
+      "last_modified": 1788534950.1870904,
+      "file_size_bytes": 27,
+      "chunk_count": 1,
+      "symbol_count": 0
+    },
+    "main.py": {
+      "file_path": "main.py",
+      "sha256_hash": "9d6f91d3a7df09a4b9079ea474b066989f96512a10f75593fae5ac9614139cc2",
+      "last_modified": 1788979621.9316714,
+      "file_size_bytes": 6242,
+      "chunk_count": 19,
+      "symbol_count": 10
+    }
+  }
+}

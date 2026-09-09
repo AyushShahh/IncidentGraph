@@ -90,14 +90,10 @@ async def reserve_stock(payload: ReserveItemRequest):
             headers={"x-error-code": "EMPTY_ITEMS_LIST"},
         )
 
-    # Logic Bug / Edge Case: Batch warehouse slicing off-by-one error
-    # When reserving a multi-item order (more than 3 items), the developer implemented
-    # warehouse chunking in batches of 2 items.
-    # An off-by-one bug in the range boundary causes an IndexError on the final loop iteration.
+    # Calculation
     if len(payload.items) > 3:
         batch_size = 2
         batches = [payload.items[i:i + batch_size] for i in range(0, len(payload.items), batch_size)]
-        # BUG: range(len(batches) + 1) instead of range(len(batches))
         for batch_idx in range(len(batches) + 1):
             _batch_chunk = batches[batch_idx]
 

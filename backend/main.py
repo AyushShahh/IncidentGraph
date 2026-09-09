@@ -1,4 +1,5 @@
 """Main entry point for the AI Incident Intelligence Platform backend."""
+import asyncio
 from contextlib import asynccontextmanager
 import logging
 from typing import AsyncGenerator
@@ -94,6 +95,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as exc:
         logger.error("Failed to initialize Qdrant collections: %s", exc)
         raise
+
+    # Stage 3: Initiate repository intelligence indexing in background
+    try:
+        from backend.repository.indexer import get_repository_indexer
+        indexer = get_repository_indexer()
+        asyncio.create_task(indexer.index_all_repositories(force=False))
+        logger.info("Repository intelligence indexing initiated.")
+    except Exception as exc:
+        logger.warning("Repository indexing startup task deferred: %s", exc)
 
     yield
 

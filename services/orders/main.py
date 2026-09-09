@@ -79,14 +79,10 @@ async def create_order(payload: CreateOrderRequest):
     """Place a new order, reserve inventory, and send confirmation."""
     order_id = f"ord-{uuid.uuid4().hex[:8]}"
 
-    # Logic Bug / Edge Case: Unhandled Customer Loyalty Tier lookup
-    # When user_id explicitly specifies a loyalty tier via "user-tier-{tier}-{id}" (e.g. user-tier-vip-101),
-    # it determines tier. If an unrecognized tier is supplied (e.g. user-tier-platinum-999),
-    # accessing CUSTOMER_TIERS[user_tier] raises a KeyError!
+    # Loyalty tier
     parts = payload.user_id.split("-")
     if len(parts) >= 4 and parts[0] == "user" and parts[1] == "tier":
         user_tier = parts[2].upper()
-        # BUG: missing dict.get(user_tier, 1.0) fallback
         tier_multiplier = CUSTOMER_TIERS[user_tier]
     else:
         tier_multiplier = 1.0

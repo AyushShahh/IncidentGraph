@@ -1,0 +1,42 @@
+{
+  "service_name": "notifications",
+  "root_path": "/app/services/notifications",
+  "last_indexed_at": "2026-09-09T18:51:31.160178+00:00",
+  "file_count": 4,
+  "total_chunks": 26,
+  "total_symbols": 6,
+  "files": {
+    "Dockerfile": {
+      "file_path": "Dockerfile",
+      "sha256_hash": "b888a85de6899e766b9c3781fe24489d1c9e9db156e454c5c4fd670f4507e17b",
+      "last_modified": 1788601463.7386816,
+      "file_size_bytes": 384,
+      "chunk_count": 1,
+      "symbol_count": 0
+    },
+    "README.md": {
+      "file_path": "README.md",
+      "sha256_hash": "343f40422efcd2286a5e1ab4c464a89b8729c499a0f8fa109328007bffb71127",
+      "last_modified": 1788887694.5457788,
+      "file_size_bytes": 3890,
+      "chunk_count": 12,
+      "symbol_count": 0
+    },
+    "__init__.py": {
+      "file_path": "__init__.py",
+      "sha256_hash": "800f89175978e00857244427349d428edbe5cafe6a46a5bff32623570fcf42fe",
+      "last_modified": 1788535058.717623,
+      "file_size_bytes": 34,
+      "chunk_count": 1,
+      "symbol_count": 0
+    },
+    "main.py": {
+      "file_path": "main.py",
+      "sha256_hash": "8adf2ebad126eaa16772e3a881b6c91eafc2e9e1b098ca7444756f6467e0187f",
+      "last_modified": 1788979579.6282296,
+      "file_size_bytes": 2874,
+      "chunk_count": 12,
+      "symbol_count": 6
+    }
+  }
+}

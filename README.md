@@ -1,8 +1,10 @@
-# AI Incident Intelligence Platform - Stage 1
+# AI Incident Intelligence Platform
 
 A production-grade microservices foundation with structured JSON logging, distributed tracing propagation, real Apache Kafka ingestion with auto-topic creation, configurable failure simulation, and containerized Docker orchestration.
 
 ---
+
+# Stage 1 – Microservices Foundation & Tracing Pipeline
 
 ## 1. System Architecture
 
@@ -360,3 +362,247 @@ docker compose run --rm test-runner pytest tests/unit/test_stage2_*.py tests/int
    curl http://localhost:6333/collections/active_incident_candidates
    ```
 
+---
+
+---
+
+# Stage 3 – Repository Intelligence & Context Engine
+
+Stage 3 implements a deterministic Repository Intelligence and Context Engine that statically indexes microservice repositories, extracts code symbols and routes using Python AST, maintains incremental SHA256 freshness manifests, builds a dynamic directed interaction graph using NetworkX, computes blast radius impact ratings, indexes code/documentation into Qdrant, exposes 14 deterministic retrieval tools, and synthesizes token-bounded `ContextPackage` objects for the upcoming Stage 4 investigation agent.
+
+---
+
+## 1. Stage 3 Architecture
+
+```mermaid
+flowchart TD
+    subgraph Discovery ["1. Dynamic Discovery"]
+        ROOTS["Configured Root (services/)"] --> DISC["RepositoryDiscovery"]
+        DISC -->|Scan Subdirectories| SVCS["Discovered Services<br/>(Domain-Agnostic)"]
+        DISC -.->|Ignore| IGN[".git, venv, __pycache__"]
+    end
+
+    subgraph Parsing ["2. AST Parsing & Chunking"]
+        SVCS --> PARSER["CodeParser (ast.walk)"]
+        PARSER -->|Functions, Classes, Methods, Constants| SYM_RAW["Extracted Symbols"]
+        PARSER -->|@app.* / @router.* Decorators| ROUTES["Exposed HTTP Routes"]
+        PARSER -->|http_client, httpx, Kafka Publish| OUT_CALLS["Outbound Calls"]
+        PARSER -->|Symbol / Markdown Header Slicing| CHUNKS["Code & Doc Chunks"]
+    end
+
+    subgraph State ["3. Indexing & Freshness"]
+        CHUNKS --> MAN["ManifestManager"]
+        MAN -->|SHA256 Fingerprints| DIFF{"Incremental Diff:<br/>Added / Modified / Deleted / Unchanged"}
+        DIFF -->|Changed Files Only| VEC["VectorIndexer (Qdrant: repository_code)"]
+        DIFF -->|Unchanged Files| SKIP["Skip Embedding (0 Compute Cost)"]
+        SYM_RAW & ROUTES --> SYMIDX["SymbolIndex (In-Memory Table)"]
+        OUT_CALLS & ROUTES --> DGRAPH["DependencyGraph (NetworkX DiGraph)"]
+    end
+
+    subgraph Stage4 ["4. Deterministic Retrieval & Context Assembly"]
+        SYMIDX & DGRAPH & VEC --> TOOLS["14 Retrieval Tools (RepositoryTools)"]
+        TOOLS --> CTX_BLD["ContextBuilder"]
+        CTX_BLD -->|Stack Trace Parsing + Snippets + Blast Radius| PKG["ContextPackage<br/>(Token Budget <= 3500)"]
+    end
+```
+
+---
+
+## 2. Core Subsystems & Responsibilities
+
+### 1. Dynamic Discovery Engine (`discovery.py`)
+- **Completely Domain-Agnostic**: Dynamically discovers any service directory residing inside `REPOSITORIES_ROOT_DIR` (e.g. `services/`) without hardcoding service names.
+- **Noise Filtering**: Automatically ignores non-service directories such as `.git`, `__pycache__`, `venv`, `.venv`, and temporary artifacts.
+- **Arbitrary External Service Registration**: Supports registering external repositories on arbitrary paths at runtime.
+
+### 2. AST Parser & Document Chunker (`parser.py`)
+- **100% Deterministic Parsing**: Uses Python's standard `ast` module to extract:
+  - Top-level and class functions (`FunctionDef`, `AsyncFunctionDef`), signatures, and docstrings.
+  - Class hierarchies (`ClassDef`) and enclosed methods.
+  - Global constants (`Assign` with uppercase identifiers).
+  - FastAPI/Starlette route definitions (`@app.get`, `@app.post`, etc.) extracting HTTP methods, paths, and response models.
+  - Outbound HTTP calls (`http_client.post`, `httpx`, f-strings with service URL variables) and Kafka event publishing operations.
+- **Granular Document Chunking**:
+  - Code: Windowed slicing aligned to top-level symbol boundaries with line overlap.
+  - Markdown: Segmented by `#` / `##` header sections for contextual documentation retrieval.
+  - Configuration: Chunks Dockerfiles, `requirements.txt`, and settings files by logical blocks.
+
+### 3. In-Memory Symbol Index (`symbol_index.py`)
+- Fast in-memory symbol lookup supporting exact name matches, qualified method lookups (e.g. `OrderProcessor.execute`), and prefix/substring searches.
+- Route registry cataloging all exposed HTTP endpoints across the entire system.
+- Fine-grained invalidation: supports surgical re-indexing of individual files or services.
+
+### 4. Dynamic Dependency Graph & Blast Radius (`dependency_graph.py`)
+- Built on `networkx.DiGraph` representing service interactions (`Caller -> Callee`).
+- **Edge Resolution**: Dynamically maps outbound HTTP calls to target services via URL host hints and endpoint path pattern matching across registered routes.
+- **Blast Radius Calculation**:
+  - **Direct Callers**: Immediate upstream services calling the target service.
+  - **Transitive Callers (Ancestors)**: All upstream services across the dependency chain that will directly or indirectly fail if the target service goes down.
+  - **Downstream Dependencies (Successors)**: Services required by the target service.
+  - **Impact Level**: Deterministically graded (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`) based on caller count and graph centrality.
+
+### 5. Manifest Manager & Incremental Diffing (`manifest.py`)
+- Computes SHA256 hex digests for all repository files, persisted as JSON manifests in `backend/data/manifests/`.
+- Computes file freshness diffs (`added`, `modified`, `deleted`, `unchanged`).
+- Untouched files are completely skipped during re-indexing runs, eliminating redundant parsing and vector embedding operations.
+
+### 6. Qdrant Vector Indexer (`vector_indexer.py`)
+- Interfaces with Qdrant collection `repository_code` (384 dimensions, Cosine distance).
+- Generates deterministic point UUIDs (`uuid5(NAMESPACE_URL, f"{service}:{file}:{start_line}")`) preventing duplicate points.
+- Batches chunk embeddings using the platform's pluggable embedding provider (`SentenceTransformer`, `Ollama`, or `Gemini`).
+- Supports filtered similarity search by service name and chunk type (`code`, `documentation`, `configuration`).
+
+### 7. Master Indexer Orchestrator (`indexer.py`)
+- Orchestrates multi-repository discovery, incremental diffing, AST parsing, vector upserts, and dependency graph updates.
+- Automatically kicks off an asynchronous background index refresh during platform backend startup (`backend/main.py`).
+
+---
+
+## 3. The 14 Deterministic Retrieval Tools (`tools.py`)
+
+Stage 3 provides 14 specialized retrieval tools designed for direct consumption by the Stage 4 Investigation Agent:
+
+| # | Tool Name | Parameters | Return Type | Description |
+| :-: | :--- | :--- | :--- | :--- |
+| 1 | `search_code` | `query`, `service?`, `limit=5` | `List[Dict]` | Semantic vector search in Qdrant with lexical fallback. |
+| 2 | `read_file` | `service`, `file_path`, `max_lines=300` | `Dict` | Reads file content with line numbers and truncation guard. |
+| 3 | `read_lines` | `service`, `file_path`, `start_line`, `end_line` | `Dict` | Extracts specific 1-indexed line range with line numbers. |
+| 4 | `find_symbol` | `symbol_name`, `service?` | `List[Dict]` | Resolves symbol definition, location, signature, and docstring. |
+| 5 | `find_referencing_files` | `symbol_name`, `service?` | `List[Dict]` | Identifies source files containing references to a symbol. |
+| 6 | `list_directory` | `service`, `relative_path=""` | `Dict` | Lists directory files, subdirectories, and file sizes. |
+| 7 | `lookup_dependencies` | `service` | `Dict` | Returns direct upstream callers and downstream dependencies. |
+| 8 | `get_blast_radius` | `service` | `Dict` | Assesses transitive failure impact, affected routes, and severity. |
+| 9 | `get_service_routes` | `service` | `List[Dict]` | Lists all HTTP routes exposed by a given service. |
+| 10 | `get_service_manifest` | `service` | `Dict` | Retrieves file checksums, chunk counts, and indexing timestamps. |
+| 11 | `list_indexed_services` | None | `List[str]` | Lists all discovered and indexable microservices. |
+| 12 | `get_topology_graph` | None | `Dict` | Exports full system dependency graph (nodes, edges, centrality). |
+| 13 | `read_config` | `service`, `config_name` | `Dict` | Reads configuration files (Dockerfile, requirements, settings). |
+| 14 | `build_incident_context` | `incident_id?`, `service`, `error_trace?`, `file_paths?`, `token_budget?` | `Dict` | Assembles a token-bounded `ContextPackage` for an incident. |
+
+---
+
+## 4. Token-Bounded Context Package Synthesizer (`context_builder.py`)
+
+The Context Builder packages essential diagnostic code context while strictly respecting token budgets:
+1. **Traceback Parsing**: Regex-extracts referenced source files and line numbers from error stack traces.
+2. **Surgical Code Excerpts**: Extracts line slices (±15 lines around the error line) with numbered lines.
+3. **Symbol Correlation**: Matches relevant symbols, function signatures, and method docstrings.
+4. **Dependency & Blast Radius Injection**: Appends upstream callers, downstream services, and affected endpoints.
+5. **Strict Token Budgeting**: Implements character-to-token budgeting (~4 chars per token, default `STAGE3_MAX_CONTEXT_TOKENS = 3500`). Prioritizes error snippets and blast radius over secondary search hits, setting `truncated = True` if the budget is reached.
+
+---
+
+## 5. REST API Endpoints
+
+The repository intelligence engine exposes REST APIs mounted under `/api/v1/repositories` and `/api/v1/context`:
+
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` | `/api/v1/repositories` | List discovered repositories with file, chunk, and symbol counts |
+| `GET` | `/api/v1/repositories/status` | Indexer health metrics, total indexed symbols, and graph size |
+| `POST` | `/api/v1/repositories/reindex` | Trigger incremental reindexing across all discovered repositories (`?force=true` for full refresh) |
+| `POST` | `/api/v1/repositories/reindex/{service}` | Trigger incremental reindexing for a specific service repository |
+| `GET` | `/api/v1/repositories/dependency-graph` | Export full system topology with in/out degree centrality metrics |
+| `GET` | `/api/v1/repositories/blast-radius/{service}` | Calculate blast radius, transitive callers, and affected routes for a service |
+| `GET` | `/api/v1/repositories/symbols/search` | Search symbols across repositories with optional `query`, `service`, and `symbol_type` filters |
+| `GET` | `/api/v1/repositories/search` | Semantically search indexed code chunks across repositories (`?query=...&service=...`) |
+| `GET` | `/api/v1/repositories/files/content` | Read source file or line range (`?service=...&path=...&start_line=...&end_line=...`) |
+| `GET` | `/api/v1/repositories/routes/{service}` | Retrieve all registered HTTP route endpoints for a service |
+| `POST` | `/api/v1/context/build` | Synthesize a token-bounded `ContextPackage` for incident investigation |
+
+### Example: Build Incident Context Package
+**Request**:
+```bash
+curl -X POST http://localhost:8000/api/v1/context/build \
+  -H "Content-Type: application/json" \
+  -d '{
+    "service": "orders",
+    "incident_id": "c69560b2-8dd2-4af6-953e-9c6cd1395406",
+    "error_trace": "Traceback (most recent call last):\n  File \"/app/services/orders/main.py\", line 118, in create_order\n    multiplier = CUSTOMER_TIERS[tier]\nKeyError: '\''PLATINUM'\''",
+    "token_budget": 2000
+  }'
+```
+
+**Response**:
+```json
+{
+  "incident_id": "c69560b2-8dd2-4af6-953e-9c6cd1395406",
+  "primary_service": "orders",
+  "target_files": ["main.py"],
+  "code_snippets": [
+    {
+      "service_name": "orders",
+      "file_path": "main.py",
+      "start_line": 103,
+      "end_line": 133,
+      "content": " 103: async def create_order(request: OrderRequest):\n ...\n 118:     multiplier = CUSTOMER_TIERS[tier]\n ...",
+      "reason": "Stack trace error site around line 118"
+    }
+  ],
+  "symbols": [
+    {
+      "name": "create_order",
+      "symbol_type": "route",
+      "service_name": "orders",
+      "file_path": "main.py",
+      "start_line": 103,
+      "end_line": 133,
+      "signature": "@app.post(\"/orders\")",
+      "docstring": "Process incoming order and reserve inventory."
+    }
+  ],
+  "dependency_summary": {
+    "service": "orders",
+    "downstream_dependencies": ["inventory", "notifications"],
+    "upstream_callers": ["gateway"]
+  },
+  "blast_radius": {
+    "target_service": "orders",
+    "impact_level": "HIGH",
+    "direct_callers": ["gateway"],
+    "transitive_callers": ["gateway"],
+    "downstream_dependencies": ["inventory", "notifications"],
+    "affected_routes": [
+      "[ORDERS] POST /orders",
+      "[GATEWAY] POST /api/checkout"
+    ],
+    "summary": "Failure in 'orders' impacts 1 upstream service(s) (gateway). Direct callers: 1; Downstream dependencies: 2."
+  },
+  "estimated_tokens": 420,
+  "token_budget": 2000,
+  "truncated": false
+}
+```
+
+---
+
+## 6. How to Run and Verify Stage 3
+
+### Step 1: Run Automated Stage 3 Unit Tests
+Run the complete Stage 3 test suite within the Docker test runner:
+```bash
+docker compose run --rm test-runner pytest tests/unit/test_stage3_*.py -v
+```
+
+### Step 2: Run the Full Platform Unit & Integration Suites
+Verify that Stages 1, 2, and 3 run without conflicts:
+```bash
+docker compose run --rm test-runner pytest tests/unit/ -v
+docker compose run --rm test-runner pytest tests/integration/ -v
+```
+
+### Step 3: Query Stage 3 APIs Live
+Inspect discovered repositories and system topology:
+```bash
+# List discovered repositories and indexing status
+curl http://localhost:8000/api/v1/repositories
+
+# View full system dependency graph
+curl http://localhost:8000/api/v1/repositories/dependency-graph
+
+# Check blast radius if 'inventory' service fails
+curl http://localhost:8000/api/v1/repositories/blast-radius/inventory
+
+# Search for symbols across all services
+curl "http://localhost:8000/api/v1/repositories/symbols/search?query=checkout"
+```
