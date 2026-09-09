@@ -70,7 +70,8 @@ class VectorIndexer:
                 )
                 payload: Dict[str, Any] = {
                     "chunk_id": chunk.chunk_id,
-                    "service_name": chunk.service_name,
+                    "service": chunk.service_name.lower(),
+                    "service_name": chunk.service_name.lower(),
                     "file_path": chunk.file_path,
                     "start_line": chunk.start_line,
                     "end_line": chunk.end_line,
@@ -98,6 +99,34 @@ class VectorIndexer:
 
         logger.info("Successfully indexed %d/%d chunks in Qdrant.", total_upserted, len(chunks))
         return total_upserted
+
+    async def count_service_chunks(self, service_name: Optional[str] = None) -> int:
+        """Count the number of points currently stored in Qdrant for a service or whole collection."""
+        client = await get_qdrant_client()
+        try:
+            exists = await client.collection_exists(self.collection_name)
+            if not exists:
+                return 0
+
+            count_filter = None
+            if service_name:
+                count_filter = Filter(
+                    must=[
+                        FieldCondition(
+                            key="service_name", match=MatchValue(value=service_name.lower())
+                        )
+                    ]
+                )
+
+            res = await client.count(
+                collection_name=self.collection_name,
+                count_filter=count_filter,
+                exact=True,
+            )
+            return res.count if hasattr(res, "count") else int(res)
+        except Exception as exc:
+            logger.warning("Failed checking point count in Qdrant for service '%s': %s", service_name, exc)
+            return 0
 
     async def search_code(
         self,

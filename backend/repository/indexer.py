@@ -163,7 +163,12 @@ class RepositoryIndexer:
             service_name, service_root, current_files
         )
 
-        files_to_embed = set(diff.added + diff.modified) if not force else set(current_files)
+        # Self-healing check: If Qdrant was restarted or has 0 points for this service,
+        # re-embed all files regardless of manifest cache state.
+        qdrant_chunk_count = await self.vector_indexer.count_service_chunks(service_name)
+        needs_full_embed = force or (qdrant_chunk_count == 0)
+
+        files_to_embed = set(current_files) if needs_full_embed else set(diff.added + diff.modified)
         deleted_files = diff.deleted
 
         # Handle deleted files
