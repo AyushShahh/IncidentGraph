@@ -22,6 +22,7 @@ langchain-core>=0.2.30
 sentence-transformers>=3.0.1
 hdbscan>=0.8.38.post2
 networkx>=3.3
+google-genai>=1.0.0
 
 # Utilities & Networking
 httpx>=0.27.0

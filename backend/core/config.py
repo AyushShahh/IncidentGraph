@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: Optional[str] = None
     GEMINI_EMBEDDING_MODEL: str = "models/text-embedding-004"
     OLLAMA_BASE_URL: str = "http://host.docker.internal:11434"
-    OLLAMA_EMBEDDING_MODEL: str = "nomic-embed-text"
+    OLLAMA_EMBEDDING_MODEL: str = "nomic-embed-text-v2-moe"
 
     # Stage 2: HDBSCAN Clustering Settings
     HDBSCAN_MIN_CLUSTER_SIZE: int = 2
@@ -95,8 +95,8 @@ class Settings(BaseSettings):
     STAGE3_MAX_CONTEXT_TOKENS: int = 3500
 
     # Stage 4: Pluggable LLM Providers & API Keys
-    LLM_PROVIDER: str = "openai"  # "openai", "anthropic", "gemini", "groq", "ollama", "vllm", "llamacpp", "mock"
-    LLM_MODEL: str = "gpt-4o-mini"
+    LLM_PROVIDER: str = "google"  # "openai", "anthropic", "gemini", "groq", "ollama", "vllm", "llamacpp", "mock"
+    LLM_MODEL: str = "gemini-3.5-flash-lite"
 
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-4o-mini"
@@ -106,8 +106,11 @@ class Settings(BaseSettings):
     ANTHROPIC_MODEL: str = "claude-3-5-sonnet-20241022"
     ANTHROPIC_BASE_URL: str = "https://api.anthropic.com/v1"
 
-    GEMINI_LLM_MODEL: str = "gemini-1.5-pro"
+    GEMINI_LLM_MODEL: str = "gemini-3.5-flash-lite"
     GEMINI_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta"
+    GEMINI_USE_VERTEX_AI: bool = True  # Enable Vertex AI mode with google-genai SDK by default
+    GOOGLE_CLOUD_PROJECT: Optional[str] = None
+    GOOGLE_CLOUD_LOCATION: str = "global"
 
     GROQ_API_KEY: Optional[str] = None
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
@@ -124,8 +127,8 @@ class Settings(BaseSettings):
     # Stage 4: Investigation Loop & Token Limits
     STAGE4_MAX_ITERATIONS: int = 5
     STAGE4_CONFIDENCE_THRESHOLD: float = 0.85
-    STAGE4_TOKEN_BUDGET: int = 4000
-    STAGE4_TOOL_TIMEOUT_SECONDS: float = 10.0
+    STAGE4_TOKEN_BUDGET: int = 16000
+    STAGE4_TOOL_TIMEOUT_SECONDS: float = 60.0
     STAGE4_MEMORY_SIMILARITY_THRESHOLD: float = 0.80
     STAGE4_EXECUTION_MEMORY_TTL_SECONDS: int = 86400  # 24 hours
 

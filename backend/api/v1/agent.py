@@ -48,7 +48,8 @@ async def trigger_investigation(
                     )
                 if not request.error_trace and inc.representative_log:
                     request.error_trace = (
-                        inc.representative_log.get("traceback")
+                        inc.representative_log.get("exception")
+                        or inc.representative_log.get("traceback")
                         or inc.representative_log.get("stack_trace")
                         or inc.representative_log.get("trace")
                     )
@@ -58,7 +59,8 @@ async def trigger_investigation(
                     request.error_message = first_cand.normalized_text
                     if not request.error_trace and first_cand.representative_log:
                         request.error_trace = (
-                            first_cand.representative_log.get("traceback")
+                            first_cand.representative_log.get("exception")
+                            or first_cand.representative_log.get("traceback")
                             or first_cand.representative_log.get("stack_trace")
                         )
         except ValueError:

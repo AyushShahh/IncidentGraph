@@ -134,7 +134,7 @@ class VectorIndexer:
         service: Optional[str] = None,
         chunk_type: Optional[ChunkType] = None,
         limit: int = 5,
-        score_threshold: float = 0.40,
+        score_threshold: float = 0.20,
     ) -> List[Tuple[CodeChunk, float]]:
         """Perform semantic search across indexed repository code and docs.
 

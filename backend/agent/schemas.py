@@ -49,6 +49,15 @@ class ReviewResult(BaseModel):
     confidence_score: float = Field(..., ge=0.0, le=1.0, description="Audited confidence score")
 
 
+class ReportSynthesis(BaseModel):
+    """Structured output model for final report synthesis generation."""
+    root_cause: str = Field(..., description="Authoritative explanation of the bug and why it triggered")
+    suggested_fix: str = Field(..., description="Exact code diff or python replacement lines resolving the bug")
+    blast_radius: Optional[Dict[str, Any]] = Field(default=None, description="Blast radius assessment")
+    references: List[str] = Field(default_factory=list, description="Relevant files, routes, or documentation referenced")
+    reasoning_summary: str = Field(..., description="Step-by-step reasoning linking the error signal to the code flaw")
+
+
 class FinalReport(BaseModel):
     """Comprehensive, production-grade root cause analysis and resolution proposal."""
     incident_id: str
@@ -59,7 +68,7 @@ class FinalReport(BaseModel):
     inspected_symbols: List[str] = Field(default_factory=list)
     consulted_docs: List[str] = Field(default_factory=list)
     blast_radius: Optional[Dict[str, Any]] = None
-    confidence: float
+    confidence: float = 0.90
     suggested_fix: str
     references: List[str] = Field(default_factory=list)
     reasoning_summary: str

@@ -81,3 +81,17 @@ def test_set_llm_provider_override():
     custom = MockLLMProvider(model_name="custom-mock")
     set_llm_provider(custom, "custom")
     assert get_llm_provider("custom") is custom
+
+
+@pytest.mark.asyncio
+async def test_gemini_provider_vertex_and_http_selection():
+    """Verify GeminiLLMProvider honors use_vertex_ai flag."""
+    p_vertex = GeminiLLMProvider(use_vertex_ai=True, project="test-proj", location="us-central1")
+    assert p_vertex.use_vertex_ai is True
+    assert p_vertex.project == "test-proj"
+    assert p_vertex.location == "us-central1"
+
+    p_http = GeminiLLMProvider(use_vertex_ai=False, api_key="fake-key")
+    assert p_http.use_vertex_ai is False
+    assert p_http.api_key == "fake-key"
+

@@ -69,16 +69,19 @@ class ContextManager:
                     "relevance": "empty",
                 }
 
-            top_hit = raw_output[0]
+            # Prioritize code chunks (.py) over documentation if present
+            code_hits = [h for h in raw_output if str(h.get("file_path", "")).endswith(".py")]
+            top_hit = code_hits[0] if code_hits else raw_output[0]
             fpath = top_hit.get("file_path", "")
             raw_c = top_hit.get("content", "").splitlines()
             snippet = "\n".join(raw_c[:8])
+            matched_locs = [f"{h.get('file_path')}:{h.get('start_line')}" for h in raw_output[:3]]
             return {
                 "source_tool": tool_name,
                 "file_path": fpath,
                 "line_range": f"{top_hit.get('start_line')}-{top_hit.get('end_line')}",
                 "code_snippet": snippet,
-                "finding_summary": f"Found match in {fpath} (symbols: {top_hit.get('symbols', [])}, score: {top_hit.get('similarity_score', 0)})",
+                "finding_summary": f"Found {len(raw_output)} match(es) [{', '.join(matched_locs)}], top match in {fpath} (symbols: {top_hit.get('symbols', [])}, score: {top_hit.get('similarity_score', 0)})",
                 "relevance": "code_search",
             }
 
@@ -136,6 +139,7 @@ class ContextManager:
         args: Dict[str, Any],
         visited_files: Set[str],
         visited_symbols: Set[str],
+        visited_queries: Optional[Set[str]] = None,
     ) -> bool:
         """Prevent agent from invoking identical tool operations repeatedly."""
         if tool_name in ("read_lines", "read_file"):
@@ -145,6 +149,10 @@ class ContextManager:
         if tool_name == "find_symbol":
             sym = args.get("symbol_name", "")
             return sym in visited_symbols
+
+        if tool_name == "search_code" and visited_queries is not None:
+            q = args.get("query", "").strip().lower()
+            return q in visited_queries
 
         return False
 
@@ -191,6 +199,20 @@ class ContextManager:
         visited_f = state.get("visited_files", [])
         if visited_f:
             blocks.append(f"Already inspected files: {', '.join(visited_f)}")
+
+        # 5. Discovered service files if available
+        service = state.get("primary_service")
+        if service:
+            try:
+                from backend.repository.indexer import get_repository_indexer
+                indexer = get_repository_indexer()
+                svc_path = indexer.get_service_path(service)
+                if svc_path and svc_path.exists():
+                    py_files = [p.name for p in svc_path.glob("*.py")]
+                    if py_files:
+                        blocks.append(f"Available Python files in service '{service}': {', '.join(sorted(py_files))}")
+            except Exception:
+                pass
 
         result = "\n\n".join(blocks)
         logger.debug("Assembled working context prompt (~%d tokens)", self.estimate_tokens(result))

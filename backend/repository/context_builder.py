@@ -55,8 +55,8 @@ class ContextBuilder:
             if file_match not in target_files:
                 target_files.append(file_match)
 
-        # 2. Extract code snippets around error lines (highest priority)
-        for fpath, line_no in stack_locations:
+        # 2. Extract code snippets around error lines (deepest exception frame first)
+        for fpath, line_no in reversed(stack_locations):
             snippet_res = self.tools.read_lines(
                 service=service,
                 file_path=fpath,

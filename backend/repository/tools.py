@@ -87,27 +87,25 @@ class RepositoryTools:
         # Lexical fallback if vector search yielded zero hits (e.g. mock / test env)
         if not results:
             svc_filter = service.lower() if service else None
+            matched = []
             for (svc_name, rel_path), chunks in self.indexer._chunks_cache.items():
                 if svc_filter and svc_name.lower() != svc_filter:
                     continue
                 for c in chunks:
                     if query.lower() in c.content.lower():
-                        results.append(
-                            {
-                                "service": c.service_name,
-                                "file_path": c.file_path,
-                                "start_line": c.start_line,
-                                "end_line": c.end_line,
-                                "chunk_type": c.chunk_type.value,
-                                "content": c.content,
-                                "symbols": c.symbol_names,
-                                "similarity_score": 1.0,
-                            }
-                        )
-                        if len(results) >= limit:
-                            break
-                if len(results) >= limit:
-                    break
+                        prio = 0 if c.chunk_type == ChunkType.CODE else (1 if c.chunk_type == ChunkType.CONFIG else 2)
+                        matched.append((prio, {
+                            "service": c.service_name,
+                            "file_path": c.file_path,
+                            "start_line": c.start_line,
+                            "end_line": c.end_line,
+                            "chunk_type": c.chunk_type.value,
+                            "content": c.content,
+                            "symbols": c.symbol_names,
+                            "similarity_score": 1.0,
+                        }))
+            matched.sort(key=lambda x: x[0])
+            results = [m[1] for m in matched[:limit]]
 
         return results
 

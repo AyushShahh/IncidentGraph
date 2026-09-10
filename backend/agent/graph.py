@@ -20,6 +20,7 @@ from backend.agent.schemas import (
     InvestigationPlan,
     InvestigationRunRequest,
     InvestigationState,
+    ReportSynthesis,
     ReviewResult,
 )
 from backend.agent.tools import agent_tool_dispatcher
@@ -267,11 +268,17 @@ async def evidence_gathering_node(state: InvestigationState) -> InvestigationSta
     # Prevent duplicate visits
     visited_files = set(state.get("visited_files", []))
     visited_symbols = set(state.get("visited_symbols", []))
-    if context_manager.is_duplicate_call(tool_name, tool_args, visited_files, visited_symbols):
+    visited_queries = set(state.get("visited_queries", []))
+    if context_manager.is_duplicate_call(tool_name, tool_args, visited_files, visited_symbols, visited_queries):
         logger.info("Prevented duplicate tool call for '%s' (%s).", tool_name, tool_args)
-        raw_output = {"error": "Already inspected. Using existing evidence."}
+        raw_output = {"error": "Already queried or inspected with these arguments. Choose a different tool or target to make progress."}
     else:
         raw_output = await agent_tool_dispatcher.execute_tool(tool_name, tool_args)
+
+    if tool_name == "search_code" and "query" in tool_args:
+        q = str(tool_args["query"]).strip().lower()
+        if q not in state.get("visited_queries", []):
+            state.setdefault("visited_queries", []).append(q)
 
     # Summarize tool output to minimize token consumption
     summary_dict = context_manager.summarize_tool_output(tool_name, raw_output)
@@ -409,11 +416,26 @@ async def reviewer_node(state: InvestigationState) -> InvestigationState:
     ]
 
     try:
-        report_data = await llm.generate_structured(
+        synthesis: ReportSynthesis = await llm.generate_structured(
             messages=rep_messages,
-            response_model=FinalReport,
+            response_model=ReportSynthesis,
             temperature=0.1,
             max_tokens=600,
+        )
+        report_data = FinalReport(
+            incident_id=state["incident_id"],
+            primary_service=state["primary_service"],
+            root_cause=synthesis.root_cause,
+            evidence=[EvidenceItem(**e) for e in state.get("evidence", [])],
+            inspected_files=state.get("visited_files", []),
+            inspected_symbols=state.get("visited_symbols", []),
+            consulted_docs=state.get("visited_docs", []),
+            blast_radius=synthesis.blast_radius or blast,
+            confidence=state.get("confidence", 0.90),
+            suggested_fix=synthesis.suggested_fix,
+            references=synthesis.references or state.get("visited_files", []),
+            reasoning_summary=synthesis.reasoning_summary,
+            resolution_status="AWAITING_APPROVAL",
         )
     except Exception as exc:
         logger.warning("Report compilation fallback: %s.", exc)
