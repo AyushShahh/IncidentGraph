@@ -21,16 +21,23 @@ async def get_qdrant_client() -> AsyncQdrantClient:
     global _qdrant_client, _qdrant_loop
     current_loop = asyncio.get_running_loop()
     if _qdrant_client is None or _qdrant_loop != current_loop:
-        logger.info(
-            "Connecting to Qdrant at %s:%s",
-            settings.QDRANT_HOST,
-            settings.QDRANT_HTTP_PORT,
-        )
-        _qdrant_client = AsyncQdrantClient(
-            host=settings.QDRANT_HOST,
-            port=settings.QDRANT_HTTP_PORT,
-            api_key=settings.QDRANT_API_KEY,
-        )
+        if settings.QDRANT_URL:
+            logger.info("Connecting to Qdrant at %s", settings.QDRANT_URL)
+            _qdrant_client = AsyncQdrantClient(
+                url=settings.QDRANT_URL,
+                api_key=settings.QDRANT_API_KEY,
+            )
+        else:
+            logger.info(
+                "Connecting to Qdrant at %s:%s",
+                settings.QDRANT_HOST,
+                settings.QDRANT_HTTP_PORT,
+            )
+            _qdrant_client = AsyncQdrantClient(
+                host=settings.QDRANT_HOST,
+                port=settings.QDRANT_HTTP_PORT,
+                api_key=settings.QDRANT_API_KEY,
+            )
         _qdrant_loop = current_loop
     return _qdrant_client
 

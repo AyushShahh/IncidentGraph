@@ -147,16 +147,54 @@ context_router = APIRouter()
 @router.post("/context/build", summary="Synthesize a token-bounded context package (alias)", response_model=ContextPackage)
 async def build_context_package(payload: BuildContextRequest) -> ContextPackage:
     """Assemble deterministic, token-budgeted incident context for agent consumption."""
-    try:
-        service_name = payload.get_service()
-    except ValueError as err:
-        raise HTTPException(status_code=422, detail=str(err))
+    service_name = payload.service or payload.primary_service
+    error_trace = payload.get_error_trace()
+
+    # If service or trace is missing, hydrate from PostgreSQL via incident_id
+    if payload.incident_id and (not service_name or not error_trace):
+        from sqlalchemy import select
+        import uuid
+        from backend.db.session import async_session_factory
+        from backend.models.incident import Incident
+
+        try:
+            inc_uuid = uuid.UUID(payload.incident_id)
+            async with async_session_factory() as session:
+                stmt = select(Incident).where(Incident.id == inc_uuid)
+                res = await session.execute(stmt)
+                inc = res.scalar_one_or_none()
+                if inc:
+                    if not service_name:
+                        service_name = inc.primary_service
+                    if not error_trace and inc.representative_log:
+                        error_trace = (
+                            inc.representative_log.get("traceback")
+                            or inc.representative_log.get("stack_trace")
+                            or inc.representative_log.get("message")
+                        )
+                    if not error_trace and inc.candidates:
+                        first_cand = inc.candidates[0]
+                        if first_cand.representative_log:
+                            error_trace = (
+                                first_cand.representative_log.get("traceback")
+                                or first_cand.representative_log.get("stack_trace")
+                            )
+                        if not error_trace:
+                            error_trace = first_cand.normalized_text
+        except Exception:
+            pass
+
+    if not service_name:
+        raise HTTPException(
+            status_code=422,
+            detail="Could not resolve 'service'. Please provide 'service' or a valid 'incident_id'.",
+        )
 
     tools = get_repository_tools()
     pkg_dict = await tools.build_incident_context(
         incident_id=payload.incident_id,
         service=service_name,
-        error_trace=payload.get_error_trace(),
+        error_trace=error_trace,
         file_paths=payload.file_paths,
         token_budget=payload.get_token_budget(),
     )

@@ -606,3 +606,198 @@ curl http://localhost:8000/api/v1/repositories/blast-radius/inventory
 # Search for symbols across all services
 curl "http://localhost:8000/api/v1/repositories/symbols/search?query=checkout"
 ```
+
+---
+
+# Stage 4 – Autonomous Incident Investigation Agent
+
+An autonomous SRE diagnostics and code investigation agent built on **LangGraph**, modeled after real software engineering reasoning workflows (similar to Claude Code / Codex). The agent is strictly **not a chatbot**; it is an autonomous problem-solving machine that traces distributed errors down to exact source code files, functions, and lines of failure, estimates architectural blast radius, and prepares actionable remediation proposals.
+
+## 1. System Architecture
+
+```mermaid
+flowchart TD
+    subgraph Trigger ["Incident Ingestion"]
+        Inc["Incident Triggered / Submitted"]
+    end
+
+    subgraph MemoryLookup ["Instant Memory Lookup (Layer 2)"]
+        ML["Qdrant 'incident_resolutions' Search"]
+        CacheHit{"Prior Solution\nFound? (score >= 0.80)"}
+    end
+
+    subgraph Preparation ["Freshness & Context Preparation"]
+        IV["Verify Repository Manifest Freshness"]
+        Reindex["Incremental Self-Healing Reindex"]
+        CB["Stage 3 Context Builder\n(Deterministic Package <= 1500 tokens)"]
+    end
+
+    subgraph LangGraphLoop ["LangGraph Autonomous Investigation Loop"]
+        Plan["1. Planner Node\n(Surgically selects next tool)"]
+        Exec["2. Evidence Gathering Node\n(Executes Stage 3 retrieval tool)"]
+        Prune["Context Manager\n(Summarizes output, deduplicates)"]
+        Hypo["3. Hypothesis Generator Node\n(Synthesizes evidence & confidence)"]
+        LoopCheck{"Confidence >= 0.85\nor Max Iterations (5)?"}
+        Review["4. Reviewer Node\n(Adversarial audit & remediation plan)"]
+    end
+
+    subgraph HITL ["Human-in-the-Loop & Persistence"]
+        Wait["Awaiting Operator Approval\n(Checkpointed in Redis Layer 1)"]
+        Approve["Human Review via REST API\n(POST /investigations/{id}/approve)"]
+        Writer["Memory Writer Node\n(PostgreSQL record + Qdrant vector index)"]
+        Resolved["Incident RESOLVED"]
+    end
+
+    Inc --> ML
+    ML --> CacheHit
+    CacheHit -- "YES (Shortcut)" --> Resolved
+    CacheHit -- "NO" --> IV
+    IV -->|Manifest Stale| Reindex --> CB
+    IV -->|Manifest Fresh| CB
+    CB --> Plan
+    Plan --> Exec
+    Exec --> Prune --> Hypo
+    Hypo --> LoopCheck
+    LoopCheck -- "NO (Need Evidence)" --> Plan
+    LoopCheck -- "YES (Threshold Met)" --> Review
+    Review --> Wait
+    Wait --> Approve --> Writer --> Resolved
+```
+
+---
+
+## 2. Pluggable Multi-Provider LLM Abstraction
+
+The agent operates across a unified, dependency-free HTTP client abstraction (`BaseLLMProvider`) supporting all major cloud and self-hosted inference runtimes without heavy SDK requirements:
+
+| Provider Key | Target Runtime / Engine | Default Model / Base URL |
+| :--- | :--- | :--- |
+| `openai` | OpenAI Cloud API | `gpt-4o-mini` (`https://api.openai.com/v1`) |
+| `anthropic` | Anthropic Messages API | `claude-3-5-sonnet-20241022` (`https://api.anthropic.com/v1`) |
+| `gemini` | Google Gemini API | `gemini-1.5-pro` (`https://generativelanguage.googleapis.com/v1beta`) |
+| `groq` | Groq Cloud Ultra-Fast Inference | `llama-3.3-70b-versatile` (`https://api.groq.com/openai/v1`) |
+| `ollama` | Local Ollama Instance | `qwen2.5-coder:latest` (`http://host.docker.internal:11434`) |
+| `vllm` | High-Throughput vLLM Cluster | `meta-llama/Llama-3.1-8B-Instruct` (`http://localhost:8000/v1`) |
+| `llamacpp` | Local llama.cpp Server | `default` (`http://localhost:8080/v1`) |
+| `mock` | Deterministic Schema-Aware Mock | Zero-cost mock for CI/CD and offline unit testing |
+
+Configured dynamically via environment variables:
+```bash
+LLM_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o-mini
+```
+
+---
+
+## 3. 3-Layer Memory Architecture
+
+| Layer | Technology | Lifetime | Purpose |
+| :--- | :--- | :--- | :--- |
+| **Layer 1: Execution Memory** | Redis | 24 Hours (`STAGE4_EXECUTION_MEMORY_TTL_SECONDS`) | Ephemeral LangGraph state checkpoints, visited file/symbol deduplication sets (`SADD`/`SMEMBERS`), and state recovery across worker restarts. |
+| **Layer 2: Incident Memory** | PostgreSQL + Qdrant | Permanent | Relational `IncidentResolution` audit records paired with semantic vector embeddings in Qdrant (`incident_resolutions` collection). Enables **0-token, sub-second instant resolution** when recurring incidents occur. |
+| **Layer 3: Code Intelligence** | In-Memory AST + Qdrant | Incremental | Stage 3 Symbol Index, static Call Graph topology, and chunk vector search powering surgical investigation tool actions. |
+
+---
+
+## 4. Context Manager & Extreme Token Minimization
+
+To prevent runaway token costs and context degradation, the Context Manager enforces:
+1. **Strict Token Budgets**: Global budget cap of 4,000 tokens (`STAGE4_TOKEN_BUDGET`).
+2. **Aggressive Tool Summarization**:
+   - `read_lines`: Slices code down to at most 12 critical lines around the target site, truncating with explicit omission indicators.
+   - `search_code`: Retains top-1 match and condenses to 8 lines.
+   - `find_symbol`: Extracts signature and file location, discarding AST boilerplate.
+   - `find_callers` / `blast_radius`: Condenses graph edges into compact service name lists.
+3. **Duplicate Tool Elimination**: Tracks all visited files and queried symbols in Redis execution memory; subsequent attempts to read the same file are intercepted and rejected with 0 token waste.
+4. **Early Exit Threshold**: As soon as the Hypothesis node reaches `confidence >= 0.85`, the LangGraph loop terminates immediately and routes directly to the Reviewer node.
+
+---
+
+## 5. REST API Reference
+
+Mounted under `/api/v1/investigations`:
+
+### 1. Trigger Autonomous Investigation
+- **Endpoint**: `POST /api/v1/investigations/run`
+- **Payload**:
+```json
+{
+  "incident_id": "INC-PROD-101",
+  "primary_service": "inventory",
+  "title": "Deadlock detected during stock allocation",
+  "error_message": "DatabaseLockTimeout: deadlock detected in inventory allocation",
+  "error_trace": "File 'services/inventory/main.py', line 25, in reserve_stock\nraise DatabaseLockTimeout('deadlock')",
+  "max_iterations": 3,
+  "auto_approve": false
+}
+```
+- **Response**: Returns investigation findings, computed blast radius, verified evidence items, hypothesis, and final report with status `AWAITING_APPROVAL`.
+
+### 2. Retrieve Investigation Report
+- **Endpoint**: `GET /api/v1/investigations/{incident_id}`
+- **Response**: Returns current investigation checkpoint from Redis or permanent PostgreSQL record.
+
+### 3. Submit Human Approval (HITL)
+- **Endpoint**: `POST /api/v1/investigations/{incident_id}/approve`
+- **Payload**:
+```json
+{
+  "approved": true,
+  "reviewer_feedback": "Confirmed deadlock lock order fix. Approved for deployment."
+}
+```
+- **Response**: Persists resolution to PostgreSQL and embeds resolution vectors into Qdrant for future instant reuse.
+
+---
+
+## 6. Verification and Live Demonstration
+
+### Run Stage 4 Automated Test Suite
+```bash
+docker compose run --rm test-runner pytest tests/unit/test_stage4_*.py -v
+```
+
+### Run Full Platform Regression Suite (Stages 1 - 4)
+```bash
+docker compose run --rm test-runner pytest tests/unit/ -v
+docker compose run --rm test-runner pytest tests/integration/ -v
+```
+
+### Live End-to-End Demonstration via cURL
+
+```bash
+# 1. Trigger Investigation on 'inventory' deadlock
+curl -X POST http://localhost:8000/api/v1/investigations/run \
+  -H "Content-Type: application/json" \
+  -d '{
+    "incident_id": "INC-DEMO-001",
+    "primary_service": "inventory",
+    "title": "Inventory deadlock error",
+    "error_message": "DatabaseLockTimeout: deadlock detected in inventory allocation",
+    "max_iterations": 2
+  }'
+
+# 2. Inspect Investigation State (Awaiting Operator Approval)
+curl http://localhost:8000/api/v1/investigations/INC-DEMO-001
+
+# 3. Submit Human Approval (Commits to Postgres & Qdrant)
+curl -X POST http://localhost:8000/api/v1/investigations/INC-DEMO-001/approve \
+  -H "Content-Type: application/json" \
+  -d '{
+    "approved": true,
+    "reviewer_feedback": "Approved fix."
+  }'
+
+# 4. Trigger identical incident to observe Instant Cache HIT (0 LLM loops, 0 tokens)
+curl -X POST http://localhost:8000/api/v1/investigations/run \
+  -H "Content-Type: application/json" \
+  -d '{
+    "incident_id": "INC-DEMO-002",
+    "primary_service": "inventory",
+    "title": "Inventory deadlock error",
+    "error_message": "DatabaseLockTimeout: deadlock detected in inventory allocation",
+    "max_iterations": 2
+  }'
+```
+

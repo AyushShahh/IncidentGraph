@@ -3,6 +3,7 @@
 Assembles deterministic, highly-relevant code snippets, symbol definitions,
 and dependency topology strictly within configured token budgets.
 """
+from pathlib import Path
 import re
 from typing import Any, Dict, List, Optional
 
