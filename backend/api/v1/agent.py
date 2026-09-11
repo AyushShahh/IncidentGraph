@@ -186,6 +186,33 @@ async def approve_investigation(
             pass
 
     if not rep_dict:
+        if cached_state and (cached_state.get("hypothesis") or cached_state.get("error_message")):
+            hypo = cached_state.get("hypothesis") or {}
+            rep_dict = {
+                "root_cause": hypo.get("root_cause_statement") or cached_state.get("error_message", "Unknown root cause"),
+                "resolution_summary": hypo.get("failure_mechanism") or "Operator reviewed incident state.",
+                "suggested_fix": hypo.get("suggested_fix") or "Resolved by operator.",
+                "confidence": cached_state.get("confidence", 0.8),
+                "affected_services": [cached_state.get("primary_service")],
+            }
+        else:
+            try:
+                inc_uuid = uuid.UUID(incident_id)
+                stmt = select(Incident).where(Incident.id == inc_uuid)
+                res = await session.execute(stmt)
+                parent_inc = res.scalar_one_or_none()
+                if parent_inc:
+                    rep_dict = {
+                        "root_cause": parent_inc.title or "Root cause under review",
+                        "resolution_summary": parent_inc.summary or "Operator reviewed incident.",
+                        "suggested_fix": "Resolved by operator.",
+                        "confidence": 0.8,
+                        "affected_services": [parent_inc.primary_service],
+                    }
+            except (ValueError, Exception):
+                pass
+
+    if not rep_dict:
         raise HTTPException(
             status_code=404,
             detail=f"Cannot approve investigation '{incident_id}': no report found.",

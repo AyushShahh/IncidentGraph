@@ -74,7 +74,7 @@ export const api = {
     fetchJson<InvestigationDetail>(`${API_BASE}/investigations/${incidentId}`),
 
   triggerInvestigation: (incidentId: string, primaryService?: string): Promise<any> =>
-    fetchJson(`${API_BASE}/agent/run`, {
+    fetchJson(`${API_BASE}/investigations/run`, {
       method: 'POST',
       body: JSON.stringify({
         incident_id: incidentId,
@@ -83,7 +83,7 @@ export const api = {
     }),
 
   submitApproval: (incidentId: string, approved: boolean, reviewerFeedback?: string): Promise<any> =>
-    fetchJson(`${API_BASE}/agent/${incidentId}/approve`, {
+    fetchJson(`${API_BASE}/investigations/${incidentId}/approve`, {
       method: 'POST',
       body: JSON.stringify({
         approved,

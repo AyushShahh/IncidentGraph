@@ -39,10 +39,35 @@ export const IncidentDetailModal: React.FC<IncidentDetailModalProps> = ({
   const confidence = investigation?.confidence || finalReport?.confidence || 0.0;
   const confidencePct = Math.round(confidence * 100);
 
+  const isApproved =
+    incident.status === 'RESOLVED' ||
+    investigation?.status === 'RESOLVED' ||
+    investigation?.status === 'APPROVED' ||
+    investigation?.approval_status === 'APPROVED' ||
+    incident.resolution?.status === 'APPROVED' ||
+    incident.resolution?.status === 'RESOLVED' ||
+    incident.resolution?.human_approval === true;
+
+  const isRejected =
+    incident.status === 'REJECTED' ||
+    investigation?.status === 'REJECTED' ||
+    investigation?.approval_status === 'REJECTED' ||
+    incident.resolution?.status === 'REJECTED' ||
+    incident.resolution?.human_approval === false;
+
+  const isDecisionMade = isApproved || isRejected;
+
+  const reviewerNote =
+    incident.resolution?.reviewer_feedback ||
+    (investigation as any)?.reviewer_feedback;
+
   const handleApprove = async () => {
     setIsSubmitting(true);
     try {
       await onApprove(incident.id, feedback);
+    } catch (err: any) {
+      console.error('Approve failed:', err);
+      alert(`Failed to submit approval: ${err.message || err}`);
     } finally {
       setIsSubmitting(false);
     }
@@ -52,6 +77,9 @@ export const IncidentDetailModal: React.FC<IncidentDetailModalProps> = ({
     setIsSubmitting(true);
     try {
       await onReject(incident.id, feedback);
+    } catch (err: any) {
+      console.error('Reject failed:', err);
+      alert(`Failed to submit rejection: ${err.message || err}`);
     } finally {
       setIsSubmitting(false);
     }
@@ -279,56 +307,141 @@ export const IncidentDetailModal: React.FC<IncidentDetailModalProps> = ({
             </div>
           )}
 
-          {/* Human Decision Review */}
-          <div
-            style={{
-              marginTop: '0.25rem',
-              padding: '0.85rem 1rem',
-              backgroundColor: '#f8fafc',
-              border: '1px solid var(--border-subtle)',
-              borderRadius: 'var(--radius-sm)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '0.65rem',
-            }}
-          >
-            <h4 style={{ fontSize: '0.825rem', fontWeight: 600 }}>Human-in-the-Loop Review</h4>
-            <input
-              type="text"
-              placeholder="Add optional reviewer feedback..."
-              value={feedback}
-              onChange={(e) => setFeedback(e.target.value)}
+          {/* Human Decision Review or Decision Status */}
+          {isDecisionMade ? (
+            <div
               style={{
-                width: '100%',
-                backgroundColor: '#ffffff',
+                marginTop: '0.25rem',
+                padding: '0.85rem 1rem',
+                backgroundColor: isApproved ? '#f0fdf4' : '#fef2f2',
+                border: `1px solid ${isApproved ? '#bbf7d0' : '#fecaca'}`,
+                borderRadius: 'var(--radius-sm)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '1rem',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                {isApproved ? (
+                  <div
+                    style={{
+                      width: '28px',
+                      height: '28px',
+                      borderRadius: '50%',
+                      backgroundColor: '#dcfce7',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: '#16a34a',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <ThumbsUp size={14} />
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      width: '28px',
+                      height: '28px',
+                      borderRadius: '50%',
+                      backgroundColor: '#fee2e2',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: '#dc2626',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <ThumbsDown size={14} />
+                  </div>
+                )}
+                <div>
+                  <div
+                    style={{
+                      fontSize: '0.825rem',
+                      fontWeight: 600,
+                      color: isApproved ? '#166534' : '#991b1b',
+                    }}
+                  >
+                    {isApproved ? 'Resolution Approved & Committed to Memory' : 'Resolution Rejected by Operator'}
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: isApproved ? '#15803d' : '#b91c1c' }}>
+                    {reviewerNote
+                      ? `Operator Note: ${reviewerNote}`
+                      : isApproved
+                      ? 'Fix confirmed and indexed in Qdrant long-term memory for automatic incident reuse.'
+                      : 'Investigation closed without applying recommended code fix.'}
+                  </div>
+                </div>
+              </div>
+              <span
+                style={{
+                  fontSize: '0.72rem',
+                  fontWeight: 600,
+                  padding: '0.2rem 0.6rem',
+                  borderRadius: '999px',
+                  backgroundColor: isApproved ? '#dcfce7' : '#fee2e2',
+                  color: isApproved ? '#15803d' : '#b91c1c',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.04em',
+                  flexShrink: 0,
+                }}
+              >
+                {isApproved ? 'Resolved' : 'Rejected'}
+              </span>
+            </div>
+          ) : (
+            <div
+              style={{
+                marginTop: '0.25rem',
+                padding: '0.85rem 1rem',
+                backgroundColor: '#f8fafc',
                 border: '1px solid var(--border-subtle)',
                 borderRadius: 'var(--radius-sm)',
-                padding: '0.45rem 0.7rem',
-                color: '#0f172a',
-                fontSize: '0.8rem',
-                outline: 'none',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '0.65rem',
               }}
-            />
+            >
+              <h4 style={{ fontSize: '0.825rem', fontWeight: 600 }}>Human-in-the-Loop Review</h4>
+              <input
+                type="text"
+                placeholder="Add optional reviewer feedback..."
+                value={feedback}
+                onChange={(e) => setFeedback(e.target.value)}
+                style={{
+                  width: '100%',
+                  backgroundColor: '#ffffff',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '0.45rem 0.7rem',
+                  color: '#0f172a',
+                  fontSize: '0.8rem',
+                  outline: 'none',
+                }}
+              />
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
-              <button
-                onClick={handleReject}
-                disabled={isSubmitting}
-                className="btn btn-danger btn-sm"
-              >
-                <ThumbsDown size={13} />
-                Reject Fix
-              </button>
-              <button
-                onClick={handleApprove}
-                disabled={isSubmitting}
-                className="btn btn-success btn-sm"
-              >
-                <ThumbsUp size={13} />
-                Approve & Commit to Memory
-              </button>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
+                <button
+                  onClick={handleReject}
+                  disabled={isSubmitting}
+                  className="btn btn-danger btn-sm"
+                >
+                  <ThumbsDown size={13} />
+                  Reject Fix
+                </button>
+                <button
+                  onClick={handleApprove}
+                  disabled={isSubmitting}
+                  className="btn btn-success btn-sm"
+                >
+                  <ThumbsUp size={13} />
+                  Approve & Commit to Memory
+                </button>
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
     </div>

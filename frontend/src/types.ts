@@ -28,7 +28,7 @@ export interface IncidentCandidate {
 export interface Incident {
   id: string;
   title: string;
-  status: 'ACTIVE' | 'INVESTIGATING' | 'AWAITING_APPROVAL' | 'RESOLVED' | 'SUPPRESSED';
+  status: 'ACTIVE' | 'INVESTIGATING' | 'AWAITING_APPROVAL' | 'RESOLVED' | 'REJECTED' | 'SUPPRESSED';
   severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
   primary_service: string;
   affected_services: string[];
