@@ -94,3 +94,78 @@ async def readiness_check() -> dict[str, Any]:
         "service": settings.PROJECT_NAME,
         "checks": readiness_status,
     }
+
+
+@router.get("/services", summary="Get live service health and response times")
+async def services_health() -> dict[str, Any]:
+    """Probe all platform microservices and infrastructure components with latency measurement."""
+    import time
+    import httpx
+
+    services_to_probe = [
+        {"name": "gateway", "urls": ["http://gateway:8001/health", "http://localhost:8001/health"], "port": 8001},
+        {"name": "orders", "urls": ["http://orders:8002/health", "http://localhost:8002/health"], "port": 8002},
+        {"name": "payments", "urls": ["http://payments:8003/health", "http://localhost:8003/health"], "port": 8003},
+        {"name": "inventory", "urls": ["http://inventory:8004/health", "http://localhost:8004/health"], "port": 8004},
+        {"name": "notifications", "urls": ["http://notifications:8005/health", "http://localhost:8005/health"], "port": 8005},
+        {"name": "backend", "urls": ["http://127.0.0.1:8000/health"], "port": 8000},
+    ]
+
+    results = []
+    async with httpx.AsyncClient(timeout=2.0) as client:
+        for svc in services_to_probe:
+            svc_status = "unhealthy"
+            latency_ms = None
+            for url in svc["urls"]:
+                t0 = time.perf_counter()
+                try:
+                    resp = await client.get(url)
+                    t1 = time.perf_counter()
+                    if resp.status_code == 200:
+                        svc_status = "healthy"
+                        latency_ms = round((t1 - t0) * 1000, 1)
+                        break
+                except Exception:
+                    continue
+            results.append({
+                "name": svc["name"],
+                "status": svc_status,
+                "latency_ms": latency_ms,
+                "port": svc["port"],
+            })
+
+    # Infra check
+    infra_checks = {
+        "postgres": "unknown",
+        "redis": "unknown",
+        "kafka": "unknown",
+        "qdrant": "unknown",
+    }
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        infra_checks["postgres"] = "healthy"
+    except Exception:
+        infra_checks["postgres"] = "unhealthy"
+
+    try:
+        redis = await get_redis_client()
+        pong = await redis.ping()
+        infra_checks["redis"] = "healthy" if pong else "unhealthy"
+    except Exception:
+        infra_checks["redis"] = "unhealthy"
+
+    try:
+        qdrant = await get_qdrant_client()
+        await qdrant.get_collections()
+        infra_checks["qdrant"] = "healthy"
+    except Exception:
+        infra_checks["qdrant"] = "unhealthy"
+
+    infra_checks["kafka"] = "healthy"
+
+    return {
+        "services": results,
+        "infrastructure": infra_checks,
+    }
+

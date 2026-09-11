@@ -322,6 +322,22 @@ services:
     networks:
       - app-network
 
+  # Web Dashboard Frontend (React 18 + Vite + Cytoscape.js + Nginx)
+  frontend:
+    image: ai-incident-platform-frontend
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: incident-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - app-network
+
   # Test Runner Service (For executing integration test suite inside Docker)
   test-runner:
     image: ai-incident-platform-backend

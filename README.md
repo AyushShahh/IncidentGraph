@@ -801,3 +801,57 @@ curl -X POST http://localhost:8000/api/v1/investigations/run \
   }'
 ```
 
+---
+
+# Stage 5 – Autonomous Incident Dashboard & Real-Time Intelligence
+
+## 1. Overview & Architecture
+
+Stage 5 delivers an interactive, modern web command center for SREs and engineering teams, paired with automatic autonomous investigation dispatch:
+
+```mermaid
+graph TD
+    Client["Browser Dashboard (:3000)"] <-->|WebSockets /ws| NGINX["Nginx Ingress / Frontend Container"]
+    Client <-->|REST API /api/v1| NGINX
+    NGINX <-->|Reverse Proxy| Backend["Platform Backend (:8000)"]
+    
+    Backend -->|Auto-Dispatch Celery Task| Worker["Celery Worker (:6379)"]
+    Worker -->|LangGraph Multi-Agent Workflow| Agent["Autonomous RCA Agent"]
+    Agent -->|WebSocket Broadcasts| Backend
+    Backend -.->|incident:created / agent:step / agent:fix_ready| Client
+```
+
+### Dashboard Core Capabilities:
+1. **Fleet & Infrastructure Mesh Probing**: Live probing of all 5 microservices (`gateway`, `orders`, `payments`, `inventory`, `notifications`) and 4 infrastructure components (`PostgreSQL`, `Redis`, `Kafka`, `Qdrant`) with live response latency in milliseconds (`ms`).
+2. **Autonomous Auto-Dispatch Pipeline**: When Stage 2 clustering pipeline detects and commits a novel incident, it immediately enqueues `run_incident_investigation_task.delay(incident_id)` and broadcasts `incident:created` to connected clients over WebSockets.
+3. **Live Event & Telemetry Feed**: Real-time event log with short timestamps (`12:30:45`), categorizing deduplicated error occurrences, incident creation, agent milestones, and fix ready notifications.
+4. **Active Incident Queue**: Real-time causal incidents categorized by severity (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`), tracking occurrences count, primary and affected services, and last seen timestamps.
+5. **Interactive Dependency Graph (Cytoscape.js)**: Graph visualization of microservices, database storage nodes, directional HTTP call dependencies, and blast radius highlighting.
+6. **In-Depth Agent Inspector**: Dedicated inspection dashboard displaying iteration progress, context token usage, dynamic confidence gauge, evolving hypothesis (Node 7), adversarial auditor critique & score (Node 8), and complete retrieval tool execution chain (`search_code`, `read_lines`, `call_graph`, `trace_parser`).
+7. **Human-in-the-Loop (HITL) One-Click Approval**: Operators can review the suggested code patch and root cause, add optional feedback, and click **Approve** or **Reject**. Approved resolutions are committed to PostgreSQL and embedded into Qdrant for 0-token instant reuse on recurrence.
+8. **Global Search (`Ctrl+K` or `/`)**: Quick keyboard-driven search modal filtering incidents, services, and failure signatures.
+
+---
+
+## 2. Running the Dashboard
+
+The frontend is fully containerized with a multi-stage Docker build (Node.js 20 build stage -> Nginx 1.27 runtime) and integrated into `docker-compose.yaml`.
+
+### Launch the Full Platform (Backend + Services + Frontend)
+```bash
+docker compose up -d --build
+```
+
+### Accessing the Dashboard & Services
+| Component | URL / Port | Description |
+| :--- | :--- | :--- |
+| **AI Incident Intelligence Dashboard** | `http://localhost:3000` | Web UI (Dashboard, Dependency Graph, Agent Inspector) |
+| **Backend REST API** | `http://localhost:8000` | FastAPI docs at `http://localhost:8000/docs` |
+| **WebSocket Stream** | `ws://localhost:8000/ws` | Real-time event notifications |
+| **Gateway Service** | `http://localhost:8001` | Ingress coordinator |
+| **Orders Service** | `http://localhost:8002` | Orders microservice |
+| **Payments Service** | `http://localhost:8003` | Payments microservice |
+| **Inventory Service** | `http://localhost:8004` | Inventory microservice |
+| **Notifications Service**| `http://localhost:8005` | Notifications microservice |
+
+

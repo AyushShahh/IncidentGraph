@@ -33,6 +33,20 @@ from backend.repository.indexer import get_repository_indexer
 logger = get_logger(__name__)
 
 
+async def _broadcast_agent_event(event_type: str, incident_id: str, data: Dict[str, Any]) -> None:
+    """Safely broadcast agent state transitions and milestones to connected WebSockets."""
+    try:
+        from backend.api.v1.ws import ws_manager
+        await ws_manager.broadcast({
+            "type": event_type,
+            "incident_id": str(incident_id),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "data": data,
+        })
+    except Exception as exc:
+        logger.debug("Silent WS broadcast failure: %s", exc)
+
+
 # -----------------------------------------------------------------------------
 # Node 1: Entry
 # -----------------------------------------------------------------------------
@@ -58,6 +72,11 @@ async def entry_node(state: InvestigationState) -> InvestigationState:
 
     await execution_memory.save_checkpoint(incident_id, state)
     logger.info("Started investigation for incident '%s' (service: %s)", incident_id, state.get("primary_service"))
+    await _broadcast_agent_event("agent:started", incident_id, {
+        "primary_service": state.get("primary_service"),
+        "title": state.get("title"),
+        "message": f"Autonomous agent investigation started for {state.get('primary_service')}",
+    })
     return state
 
 
@@ -243,6 +262,12 @@ async def planner_node(state: InvestigationState) -> InvestigationState:
         plan.objective,
     )
     await execution_memory.save_checkpoint(state["incident_id"], state)
+    await _broadcast_agent_event("agent:step", state["incident_id"], {
+        "iteration": state["iteration_count"],
+        "tool_name": plan.target_tool.tool_name,
+        "objective": plan.objective,
+        "message": f"Iteration {state['iteration_count']}: Planner selected '{plan.target_tool.tool_name}' ({plan.objective})",
+    })
     return state
 
 
@@ -359,6 +384,12 @@ async def hypothesis_generator_node(state: InvestigationState) -> InvestigationS
         hypo.has_enough_evidence,
     )
     await execution_memory.save_checkpoint(state["incident_id"], state)
+    await _broadcast_agent_event("agent:hypothesis", state["incident_id"], {
+        "iteration": state.get("iteration_count", 0),
+        "confidence": hypo.confidence,
+        "root_cause": hypo.root_cause_statement,
+        "message": f"Hypothesis updated ({int(hypo.confidence * 100)}% confidence): {hypo.root_cause_statement[:120]}",
+    })
     return state
 
 
@@ -459,6 +490,13 @@ async def reviewer_node(state: InvestigationState) -> InvestigationState:
     state["phase"] = "reviewer"
     await execution_memory.save_checkpoint(state["incident_id"], state)
     logger.info("Investigation concluded. Audit approved = %s, Confidence = %.2f", review.approved_for_fix, state["confidence"])
+    await _broadcast_agent_event("agent:fix_ready", state["incident_id"], {
+        "confidence": state.get("confidence", 0.90),
+        "root_cause": report_data.root_cause,
+        "suggested_fix": report_data.suggested_fix,
+        "status": "AWAITING_APPROVAL",
+        "message": f"Fix ready for human review: {report_data.root_cause[:120]}",
+    })
     return state
 
 
@@ -471,11 +509,19 @@ async def human_approval_node(state: InvestigationState) -> InvestigationState:
         logger.info("Incident '%s' was approved by human operator.", state["incident_id"])
         state["status"] = "APPROVED"
         state["phase"] = "human_approval"
+        await _broadcast_agent_event("agent:approved", state["incident_id"], {
+            "status": "APPROVED",
+            "message": f"Fix approved by operator for incident {state['incident_id']}",
+        })
         return state
     elif state.get("approval_status") == "REJECTED":
         logger.info("Incident '%s' was rejected by human operator.", state["incident_id"])
         state["status"] = "REJECTED"
         state["phase"] = "human_approval"
+        await _broadcast_agent_event("agent:rejected", state["incident_id"], {
+            "status": "REJECTED",
+            "message": f"Fix rejected by operator for incident {state['incident_id']}",
+        })
         return state
 
     # Otherwise checkpoint and wait for operator approval

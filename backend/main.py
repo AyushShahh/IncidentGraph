@@ -133,9 +133,12 @@ def create_application() -> FastAPI:
     )
     app.add_middleware(TraceCorrelationMiddleware, service_name="backend")
 
+    from backend.api.v1.ws import router as ws_router
+
     # Include root API router
     app.include_router(api_router, prefix=settings.API_V1_STR)
     app.include_router(health_router, prefix="/health", tags=["Health"])
+    app.include_router(ws_router, prefix="/ws", tags=["Real-time Streaming"])
 
     @app.get("/", tags=["Root"])
     async def root_redirect():

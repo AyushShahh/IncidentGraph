@@ -6,7 +6,10 @@ celery_app = Celery(
     "ai_incident_intelligence",
     broker=settings.CELERY_BROKER_URL,
     backend=settings.CELERY_RESULT_BACKEND,
-    include=["backend.tasks.clustering_tasks"],
+    include=[
+        "backend.tasks.clustering_tasks",
+        "backend.tasks.investigation_tasks",
+    ],
 )
 
 celery_app.conf.update(

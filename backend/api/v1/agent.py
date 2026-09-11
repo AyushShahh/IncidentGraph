@@ -1,6 +1,6 @@
 """REST API endpoints for the Autonomous Incident Investigation Agent."""
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -91,6 +91,29 @@ async def trigger_investigation(
     }
 
 
+@router.get("", summary="List all recent investigations")
+async def list_investigations(
+    session: AsyncSession = Depends(get_db_session),
+) -> List[Dict[str, Any]]:
+    """Retrieve all available investigations from database resolutions."""
+    stmt = select(IncidentResolution).order_by(IncidentResolution.created_at.desc()).limit(50)
+    res = await session.execute(stmt)
+    records = res.scalars().all()
+    results = []
+    for rec in records:
+        results.append({
+            "incident_id": str(rec.incident_id),
+            "status": rec.status,
+            "approval_status": "APPROVED" if rec.human_approval else ("REJECTED" if rec.human_approval is False else "PENDING"),
+            "confidence": rec.confidence,
+            "root_cause": rec.root_cause,
+            "suggested_fix": rec.suggested_fix,
+            "source": "incident_memory",
+            "created_at": rec.created_at.isoformat() if rec.created_at else None,
+        })
+    return results
+
+
 @router.get("/{incident_id}", summary="Get investigation report and status by incident ID")
 async def get_investigation(
     incident_id: str,
@@ -111,6 +134,11 @@ async def get_investigation(
             "evidence": cached_state.get("evidence", []),
             "hypothesis": cached_state.get("hypothesis"),
             "tokens_used": cached_state.get("tokens_used", 0),
+            "review_result": cached_state.get("review_result"),
+            "visited_files": cached_state.get("visited_files", []),
+            "visited_symbols": cached_state.get("visited_symbols", []),
+            "initial_context": cached_state.get("initial_context"),
+            "current_plan": cached_state.get("current_plan"),
         }
 
     # 2. Fall back to PostgreSQL resolution record
@@ -178,6 +206,23 @@ async def approve_investigation(
         cached_state["status"] = "RESOLVED" if payload.approved else "REJECTED"
         await execution_memory.save_checkpoint(incident_id, cached_state)
 
+    try:
+        from backend.api.v1.ws import ws_manager
+        from datetime import datetime, timezone
+        await ws_manager.broadcast({
+            "type": "agent:approved" if payload.approved else "agent:rejected",
+            "incident_id": incident_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "data": {
+                "status": record.status,
+                "approved": payload.approved,
+                "reviewer_feedback": payload.reviewer_feedback,
+                "message": f"Fix for incident {incident_id} {'APPROVED' if payload.approved else 'REJECTED'} by operator.",
+            },
+        })
+    except Exception as exc:
+        logger.debug("Silent WS broadcast failure on approval: %s", exc)
+
     return {
         "message": f"Investigation resolution {'APPROVED' if payload.approved else 'REJECTED'} successfully.",
         "incident_id": incident_id,
@@ -186,3 +231,4 @@ async def approve_investigation(
         "reviewer_feedback": record.reviewer_feedback,
         "resolution": record.to_dict(),
     }
+

@@ -208,6 +208,8 @@ class IncidentClusteringPipeline:
         # 4. Open PostgreSQL Transaction
         async with async_session_factory() as session:
             try:
+                newly_created_incidents: List[Dict[str, Any]] = []
+
                 # 4a. Process Redis Hits: Update PostgreSQL counters (Zero Embedding Cost)
                 for c in redis_matched:
                     updated = await IncidentRepository.update_by_fingerprint_hit(
@@ -461,9 +463,42 @@ class IncidentClusteringPipeline:
                             await self.redis_index.index_fingerprints_batch(redis_mappings)
                             await self.vector_index.insert_candidate_vectors_batch(qdrant_payload)
 
+                            newly_created_incidents.append({
+                                "id": str(incident.id),
+                                "primary_service": primary_service,
+                                "title": title,
+                                "severity": severity,
+                            })
+
                 # Commit all database writes
                 await session.commit()
                 logger.info("Successfully committed batch clustering transactions to PostgreSQL.")
+
+                # Automatically trigger agent auto-investigation and notify UI via WebSocket for all newly created incidents
+                for inc_info in newly_created_incidents:
+                    inc_id = inc_info["id"]
+                    try:
+                        from backend.tasks.investigation_tasks import run_incident_investigation_task
+                        run_incident_investigation_task.delay(inc_id)
+                        logger.info("Automatically dispatched agent investigation for new incident %s", inc_id)
+                    except Exception as dispatch_err:
+                        logger.warning("Failed to auto-dispatch agent investigation for incident %s: %s", inc_id, dispatch_err)
+
+                    try:
+                        from backend.api.v1.ws import ws_manager
+                        await ws_manager.broadcast({
+                            "type": "incident:created",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "data": {
+                                "incident_id": inc_id,
+                                "primary_service": inc_info["primary_service"],
+                                "severity": inc_info["severity"],
+                                "title": inc_info["title"],
+                                "message": f"New incident detected in {inc_info['primary_service']}: {inc_info['title']}",
+                            },
+                        })
+                    except Exception as ws_err:
+                        logger.debug("Silent WS broadcast failure on incident creation: %s", ws_err)
 
             except Exception as exc:
                 await session.rollback()
