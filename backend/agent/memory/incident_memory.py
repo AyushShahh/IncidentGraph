@@ -116,7 +116,8 @@ class IncidentMemory:
         session: AsyncSession,
         incident_id: str,
         resolution_data: Dict[str, Any],
-        approved: bool = True,
+        approved: Optional[bool] = None,
+        status: Optional[str] = None,
         reviewer_feedback: Optional[str] = None,
     ) -> IncidentResolution:
         """Persist or update resolution in PostgreSQL and index into Qdrant for semantic reuse."""
@@ -130,6 +131,15 @@ class IncidentMemory:
 
         inc_uuid = to_uuid(incident_id)
 
+        if status:
+            status_str = status
+        elif approved is True:
+            status_str = "APPROVED"
+        elif approved is False and reviewer_feedback:
+            status_str = "REJECTED"
+        else:
+            status_str = "AWAITING_APPROVAL"
+
         aff_services = resolution_data.get("affected_services", [])
         if not aff_services and "primary_service" in resolution_data:
             aff_services = [resolution_data["primary_service"]]
@@ -138,6 +148,9 @@ class IncidentMemory:
         inc_stmt = select(Incident).where(Incident.id == inc_uuid)
         inc_res = await session.execute(inc_stmt)
         parent_incident = inc_res.scalar_one_or_none()
+
+        target_inc_status = "RESOLVED" if status_str == "APPROVED" else status_str
+
         if parent_incident is None:
             primary_svc = aff_services[0] if aff_services else "unknown"
             parent_incident = Incident(
@@ -145,7 +158,7 @@ class IncidentMemory:
                 title=f"Incident {incident_id}",
                 primary_service=primary_svc,
                 severity="HIGH",
-                status="RESOLVED" if approved else "INVESTIGATING",
+                status=target_inc_status,
                 summary=resolution_data.get("resolution_summary", ""),
             )
             session.add(parent_incident)
@@ -153,15 +166,12 @@ class IncidentMemory:
         else:
             if not aff_services and parent_incident.primary_service:
                 aff_services = [parent_incident.primary_service]
-            if approved:
-                parent_incident.status = "RESOLVED"
+            parent_incident.status = target_inc_status
 
         # 1. Update or create PostgreSQL record
         stmt = select(IncidentResolution).where(IncidentResolution.incident_id == inc_uuid)
         result = await session.execute(stmt)
         record = result.scalar_one_or_none()
-
-        status_str = "APPROVED" if approved else "REJECTED"
 
         if record is None:
             record = IncidentResolution(

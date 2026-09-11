@@ -40,7 +40,9 @@ async def _broadcast_agent_event(event_type: str, incident_id: str, data: Dict[s
         await ws_manager.broadcast({
             "type": event_type,
             "incident_id": str(incident_id),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "service": data.get("primary_service") or data.get("service"),
+            "severity": data.get("severity") or "MEDIUM",
+            "message": data.get("message") or f"{event_type} on {str(incident_id)[:8]}",
             "data": data,
         })
     except Exception as exc:
@@ -72,11 +74,45 @@ async def entry_node(state: InvestigationState) -> InvestigationState:
 
     await execution_memory.save_checkpoint(incident_id, state)
     logger.info("Started investigation for incident '%s' (service: %s)", incident_id, state.get("primary_service"))
+
+    # Update Incident status to INVESTIGATING in PostgreSQL
+    try:
+        from sqlalchemy import select
+        from backend.models.incident import Incident
+        inc_uuid = uuid.UUID(incident_id)
+        async with async_session_factory() as session:
+            inc_res = await session.execute(select(Incident).where(Incident.id == inc_uuid))
+            inc_db = inc_res.scalar_one_or_none()
+            if inc_db:
+                inc_db.status = "INVESTIGATING"
+                await session.commit()
+    except Exception as db_err:
+        logger.debug("Failed updating DB status on entry: %s", db_err)
+
     await _broadcast_agent_event("agent:started", incident_id, {
         "primary_service": state.get("primary_service"),
         "title": state.get("title"),
+        "status": "INVESTIGATING",
         "message": f"Autonomous agent investigation started for {state.get('primary_service')}",
     })
+
+    try:
+        from backend.api.v1.ws import ws_manager
+        await ws_manager.broadcast({
+            "type": "incident:updated",
+            "incident_id": incident_id,
+            "service": state.get("primary_service"),
+            "severity": "HIGH",
+            "message": f"Investigation started for {state.get('primary_service')}",
+            "data": {
+                "incident_id": incident_id,
+                "status": "INVESTIGATING",
+                "primary_service": state.get("primary_service"),
+            },
+        })
+    except Exception:
+        pass
+
     return state
 
 
@@ -125,6 +161,43 @@ async def memory_lookup_node(state: InvestigationState) -> InvestigationState:
         )
         state["final_report"] = final_rep.model_dump()
         state["phase"] = "memory_lookup_hit"
+
+        # Persist instant cache resolution to DB
+        try:
+            async with async_session_factory() as session:
+                await incident_memory.store_resolution(
+                    session=session,
+                    incident_id=state["incident_id"],
+                    resolution_data={
+                        "root_cause": match.get("root_cause", ""),
+                        "resolution_summary": f"Instantly resolved via Incident Memory cache match (similarity: {match.get('score')}).",
+                        "suggested_fix": match.get("suggested_fix", ""),
+                        "confidence": match.get("confidence", 1.0),
+                        "affected_services": [state.get("primary_service")],
+                        "reused_incident_id": match.get("incident_id"),
+                    },
+                    approved=True,
+                    status="APPROVED",
+                )
+        except Exception as db_err:
+            logger.debug("Failed saving cache hit resolution to DB: %s", db_err)
+
+        try:
+            from backend.api.v1.ws import ws_manager
+            await ws_manager.broadcast({
+                "type": "incident:updated",
+                "incident_id": state["incident_id"],
+                "service": state.get("primary_service"),
+                "severity": "LOW",
+                "message": f"Incident resolved via memory cache hit.",
+                "data": {
+                    "incident_id": state["incident_id"],
+                    "status": "RESOLVED",
+                    "primary_service": state.get("primary_service"),
+                },
+            })
+        except Exception:
+            pass
     else:
         logger.debug("Memory Lookup miss for incident '%s'. Proceeding with investigation.", state["incident_id"])
         state["cached_solution_found"] = False
@@ -294,16 +367,32 @@ async def evidence_gathering_node(state: InvestigationState) -> InvestigationSta
     visited_files = set(state.get("visited_files", []))
     visited_symbols = set(state.get("visited_symbols", []))
     visited_queries = set(state.get("visited_queries", []))
-    if context_manager.is_duplicate_call(tool_name, tool_args, visited_files, visited_symbols, visited_queries):
+    visited_ranges = set(state.get("visited_ranges", []))
+    if context_manager.is_duplicate_call(tool_name, tool_args, visited_files, visited_symbols, visited_queries, visited_ranges):
         logger.info("Prevented duplicate tool call for '%s' (%s).", tool_name, tool_args)
         raw_output = {"error": "Already queried or inspected with these arguments. Choose a different tool or target to make progress."}
     else:
         raw_output = await agent_tool_dispatcher.execute_tool(tool_name, tool_args)
 
-    if tool_name == "search_code" and "query" in tool_args:
+    clean_tool = tool_name.strip().lower().replace("-", "_").replace(" ", "_")
+    if clean_tool in ("search_code", "semantic_search") and "query" in tool_args:
         q = str(tool_args["query"]).strip().lower()
         if q not in state.get("visited_queries", []):
             state.setdefault("visited_queries", []).append(q)
+
+    if clean_tool in ("find_symbol", "lookup_symbol"):
+        sym = tool_args.get("symbol_name") or tool_args.get("symbol") or tool_args.get("name") or ""
+        if sym and sym not in state.get("visited_symbols", []):
+            state.setdefault("visited_symbols", []).append(sym)
+
+    if clean_tool in ("read_lines", "get_file_lines", "inspect_lines"):
+        fpath = tool_args.get("file_path") or tool_args.get("filepath") or tool_args.get("path") or ""
+        start_l = tool_args.get("start_line") or tool_args.get("start")
+        end_l = tool_args.get("end_line") or tool_args.get("end")
+        if start_l is not None and end_l is not None:
+            rk = f"{fpath}:{start_l}-{end_l}"
+            if rk not in state.get("visited_ranges", []):
+                state.setdefault("visited_ranges", []).append(rk)
 
     # Summarize tool output to minimize token consumption
     summary_dict = context_manager.summarize_tool_output(tool_name, raw_output)
@@ -529,6 +618,53 @@ async def human_approval_node(state: InvestigationState) -> InvestigationState:
     state["status"] = "AWAITING_APPROVAL"
     state["phase"] = "human_approval"
     await execution_memory.save_checkpoint(state["incident_id"], state)
+
+    # Persist provisional resolution to PostgreSQL so frontend immediately sees AWAITING_APPROVAL and full resolution
+    try:
+        rep_dict = state.get("final_report", {})
+        async with async_session_factory() as session:
+            await incident_memory.store_resolution(
+                session=session,
+                incident_id=state["incident_id"],
+                resolution_data={
+                    "root_cause": rep_dict.get("root_cause", ""),
+                    "resolution_summary": rep_dict.get("reasoning_summary", ""),
+                    "suggested_fix": rep_dict.get("suggested_fix", ""),
+                    "confidence": state.get("confidence", 0.9),
+                    "affected_services": [state.get("primary_service")],
+                    "inspected_files": state.get("visited_files", []),
+                    "inspected_symbols": state.get("visited_symbols", []),
+                    "consulted_docs": state.get("visited_docs", []),
+                    "blast_radius": state.get("blast_radius"),
+                    "references": rep_dict.get("references", []),
+                    "reasoning_summary": rep_dict.get("reasoning_summary"),
+                    "reused_incident_id": state.get("reused_incident_id"),
+                },
+                approved=None,
+                status="AWAITING_APPROVAL",
+                reviewer_feedback=None,
+            )
+    except Exception as db_err:
+        logger.debug("Failed saving provisional resolution to DB: %s", db_err)
+
+    # Broadcast updated state across cluster
+    try:
+        from backend.api.v1.ws import ws_manager
+        await ws_manager.broadcast({
+            "type": "incident:updated",
+            "incident_id": state["incident_id"],
+            "service": state.get("primary_service"),
+            "severity": "HIGH",
+            "message": f"Fix ready for review: {state.get('final_report', {}).get('root_cause', '')[:80]}",
+            "data": {
+                "incident_id": state["incident_id"],
+                "status": "AWAITING_APPROVAL",
+                "primary_service": state.get("primary_service"),
+            },
+        })
+    except Exception:
+        pass
+
     logger.info("Investigation '%s' is now AWAITING_APPROVAL.", state["incident_id"])
     return state
 

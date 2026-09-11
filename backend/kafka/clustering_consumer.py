@@ -109,6 +109,26 @@ class KafkaBatchClusteringConsumer:
         except Exception as exc:
             logger.error("Failed to enqueue batch to Celery task: %s", exc, exc_info=True)
 
+        # Broadcast live telemetry event for UI Event Feed
+        try:
+            from backend.api.v1.ws import ws_manager
+            distinct_svcs = sorted(list({str(item.get("service_name") or item.get("service") or "unknown") for item in batch_to_dispatch}))
+            first_err = batch_to_dispatch[0]
+            err_msg = str(first_err.get("message") or first_err.get("error") or "Service failure log detected")
+            await ws_manager.broadcast({
+                "type": "log:telemetry",
+                "service": distinct_svcs[0] if distinct_svcs else "gateway",
+                "severity": "HIGH",
+                "message": f"[{', '.join(distinct_svcs)}] Ingested {len(batch_to_dispatch)} error logs: {err_msg[:80]}",
+                "data": {
+                    "count": len(batch_to_dispatch),
+                    "services": distinct_svcs,
+                    "sample": err_msg[:120],
+                },
+            })
+        except Exception as ws_err:
+            logger.debug("Failed to broadcast log ingestion event: %s", ws_err)
+
     async def _consume_loop(self) -> None:
         """Main continuous polling loop."""
         monitored_levels = settings.monitored_log_levels_set

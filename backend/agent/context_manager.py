@@ -122,6 +122,48 @@ class ContextManager:
                     "relevance": "topology",
                 }
 
+        # Case 5: Service routes
+        if tool_name in ("get_service_routes", "list_routes") and isinstance(raw_output, list):
+            if not raw_output:
+                return {
+                    "source_tool": tool_name,
+                    "finding_summary": "No HTTP routes registered for this service.",
+                    "code_snippet": None,
+                    "relevance": "routes",
+                }
+            routes_summary = ", ".join([f"{r.get('method', 'ANY')} {r.get('path', '/')}" for r in raw_output[:8]])
+            return {
+                "source_tool": tool_name,
+                "finding_summary": f"Exposes {len(raw_output)} route(s): [{routes_summary}]",
+                "code_snippet": None,
+                "relevance": "routes",
+            }
+
+        # Case 6: Config files
+        if tool_name in ("read_config", "get_config") and isinstance(raw_output, dict):
+            cfg_name = raw_output.get("config_name", "config")
+            content = raw_output.get("content", "")
+            lines = content.splitlines()
+            snippet = "\n".join(lines[:12])
+            return {
+                "source_tool": tool_name,
+                "file_path": cfg_name,
+                "finding_summary": f"Inspected config '{cfg_name}' ({len(lines)} lines)",
+                "code_snippet": snippet,
+                "relevance": "configuration",
+            }
+
+        # Case 7: Directory listing
+        if tool_name in ("list_directory", "list_files") and isinstance(raw_output, dict):
+            entries = raw_output.get("entries", [])
+            names = [f"{e.get('name')}{'/' if e.get('is_directory') else ''}" for e in entries[:12]]
+            return {
+                "source_tool": tool_name,
+                "finding_summary": f"Directory '{raw_output.get('path', '.')}' has {len(entries)} items: {', '.join(names)}",
+                "code_snippet": None,
+                "relevance": "directory_listing",
+            }
+
         # Generic fallback
         raw_str = str(raw_output)
         if len(raw_str) > 400:
@@ -140,19 +182,36 @@ class ContextManager:
         visited_files: Set[str],
         visited_symbols: Set[str],
         visited_queries: Optional[Set[str]] = None,
+        visited_ranges: Optional[Set[str]] = None,
     ) -> bool:
-        """Prevent agent from invoking identical tool operations repeatedly."""
-        if tool_name in ("read_lines", "read_file"):
-            fpath = args.get("file_path", "")
+        """Prevent agent from invoking identical tool operations repeatedly.
+
+        Tools may be called multiple times during an investigation as long as 
+        the target or arguments (e.g. line ranges, symbols, queries) differ.
+        """
+        clean_tool = tool_name.strip().lower().replace("-", "_").replace(" ", "_")
+
+        if clean_tool in ("read_lines", "get_file_lines", "inspect_lines"):
+            if visited_ranges is not None:
+                fpath = args.get("file_path") or args.get("filepath") or args.get("path") or ""
+                start_l = args.get("start_line") or args.get("start")
+                end_l = args.get("end_line") or args.get("end")
+                if start_l is not None and end_l is not None:
+                    range_key = f"{fpath}:{start_l}-{end_l}"
+                    return range_key in visited_ranges
+            return False
+
+        if clean_tool in ("read_file", "get_file"):
+            fpath = args.get("file_path") or args.get("filepath") or args.get("path") or ""
             return fpath in visited_files
 
-        if tool_name == "find_symbol":
-            sym = args.get("symbol_name", "")
-            return sym in visited_symbols
+        if clean_tool in ("find_symbol", "lookup_symbol"):
+            sym = args.get("symbol_name") or args.get("symbol") or args.get("name") or ""
+            return sym in visited_symbols if sym else False
 
-        if tool_name == "search_code" and visited_queries is not None:
-            q = args.get("query", "").strip().lower()
-            return q in visited_queries
+        if clean_tool in ("search_code", "semantic_search") and visited_queries is not None:
+            q = (args.get("query") or args.get("q") or "").strip().lower()
+            return q in visited_queries if q else False
 
         return False
 

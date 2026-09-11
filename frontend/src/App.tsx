@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { api } from './services/api';
 import { realtimeWS } from './services/websocket';
 import {
@@ -36,6 +36,12 @@ export const App: React.FC = () => {
   const [selectedIncident, setSelectedIncident] = useState<Incident | null>(null);
   const [investigation, setInvestigation] = useState<InvestigationDetail | null>(null);
   const [isLoadingInvestigation, setIsLoadingInvestigation] = useState<boolean>(false);
+  const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
+
+  const selectedIncidentRef = useRef<Incident | null>(null);
+  useEffect(() => {
+    selectedIncidentRef.current = selectedIncident;
+  }, [selectedIncident]);
 
   // Load initial platform data
   const loadPlatformData = async () => {
@@ -90,7 +96,13 @@ export const App: React.FC = () => {
       }
       if (incidentsRes.status === 'fulfilled') {
         const val = incidentsRes.value;
-        setIncidents(Array.isArray(val) ? val : (val && Array.isArray((val as any).items)) ? (val as any).items : []);
+        const list = Array.isArray(val) ? val : (val && Array.isArray((val as any).items)) ? (val as any).items : [];
+        setIncidents(list);
+        if (!selectedIncidentRef.current && list.length > 0) {
+          setSelectedIncident(list[0]);
+          selectedIncidentRef.current = list[0];
+          loadInvestigation(list[0].id, true /* silent */);
+        }
       }
       if (graphRes.status === 'fulfilled') setGraphData(graphRes.value);
     } catch (err) {
@@ -101,16 +113,26 @@ export const App: React.FC = () => {
   };
 
   // Load investigation trace for selected incident
-  const loadInvestigation = async (incidentId: string) => {
-    setIsLoadingInvestigation(true);
+  const loadInvestigation = async (incidentId: string, silent: boolean = false) => {
+    if (!silent) {
+      setIsLoadingInvestigation(true);
+    }
     try {
       const data = await api.getInvestigation(incidentId);
-      setInvestigation(data);
+      setInvestigation((prev) => {
+        if (!prev && !data) return null;
+        if (JSON.stringify(prev) === JSON.stringify(data)) return prev;
+        return data;
+      });
     } catch (err) {
       console.debug('No investigation trace found for incident:', incidentId);
-      setInvestigation(null);
+      if (!silent) {
+        setInvestigation(null);
+      }
     } finally {
-      setIsLoadingInvestigation(false);
+      if (!silent) {
+        setIsLoadingInvestigation(false);
+      }
     }
   };
 
@@ -129,32 +151,69 @@ export const App: React.FC = () => {
       const eventData = wsMsg.data || {};
       const incidentId = wsMsg.incident_id || eventData.incident_id;
 
+      if (eventType === 'init') {
+        if (Array.isArray(eventData.history) && eventData.history.length > 0) {
+          setEvents((prev) => (prev.length === 0 ? eventData.history : prev));
+        }
+        return;
+      }
+      if (eventType === 'pong') return;
+
       // Add to live event feed
       const newEvent: FeedEvent = {
-        id: `ev-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+        id: wsMsg.id || `ev-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
         type: eventType,
         timestamp: wsMsg.timestamp || new Date().toISOString(),
-        service: eventData.primary_service || eventData.service,
-        message: eventData.message || `${eventType} received`,
-        severity: eventData.severity,
+        service: wsMsg.service || eventData.primary_service || eventData.service,
+        message: wsMsg.message || eventData.message || `${eventType} received`,
+        severity: wsMsg.severity || eventData.severity,
         incident_id: incidentId,
         data: eventData,
       };
 
-      setEvents((prev) => [newEvent, ...prev.slice(0, 99)]);
+      setEvents((prev) => {
+        const withoutDup = prev.filter((e) => e.id !== newEvent.id);
+        return [newEvent, ...withoutDup.slice(0, 99)];
+      });
 
-      // If incident was created or updated, refresh incidents list and stats
-      if (eventType.startsWith('incident:')) {
+      // If incident was created, updated, or agent step/fix occurred, refresh incidents list and stats
+      if (eventType.startsWith('incident:') || eventType.startsWith('agent:')) {
         api
           .getIncidents()
-          .then((res) => setIncidents(Array.isArray(res) ? res : (res as any)?.items || []))
+          .then((res) => {
+            const list = Array.isArray(res) ? res : (res as any)?.items || [];
+            setIncidents(list);
+            if (!selectedIncidentRef.current && list.length > 0) {
+              setSelectedIncident(list[0]);
+              selectedIncidentRef.current = list[0];
+              loadInvestigation(list[0].id, true /* silent */);
+            } else if (selectedIncidentRef.current) {
+              const updatedCurrent = list.find((i: any) => i.id === selectedIncidentRef.current?.id);
+              if (
+                updatedCurrent &&
+                (updatedCurrent.status !== selectedIncidentRef.current.status ||
+                  updatedCurrent.total_occurrences !== selectedIncidentRef.current.total_occurrences ||
+                  Boolean(updatedCurrent.resolution) !== Boolean(selectedIncidentRef.current.resolution))
+              ) {
+                setSelectedIncident(updatedCurrent);
+                selectedIncidentRef.current = updatedCurrent;
+              }
+            }
+          })
           .catch(console.error);
-        api.getStats().then(setStats).catch(console.error);
+
+        api.getStats().then((s: any) => {
+          setStats((prev) => ({
+            ...(prev || {}),
+            ...s,
+            auto_resolution_rate: s.auto_resolve_rate_percent ?? s.auto_resolution_rate ?? prev?.auto_resolution_rate ?? 0,
+          }));
+        }).catch(console.error);
       }
 
-      // If agent finished or updated for currently selected incident, update its investigation
-      if (selectedIncident && incidentId === selectedIncident.id) {
-        loadInvestigation(selectedIncident.id);
+      // If agent finished or updated for currently selected incident, update its investigation trace silently
+      if (selectedIncidentRef.current && (incidentId === selectedIncidentRef.current.id || !incidentId)) {
+        loadInvestigation(selectedIncidentRef.current.id, true /* silent */);
       }
     });
 
@@ -170,7 +229,7 @@ export const App: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
 
-    // Periodic poll for service health and stats (every 12s)
+    // Periodic poll for service health, stats, and incidents (every 5s)
     const interval = setInterval(() => {
       api
         .getServiceHealth()
@@ -184,7 +243,8 @@ export const App: React.FC = () => {
             status: (v as any) === 'healthy' ? 'healthy' : 'degraded',
             latency_ms: 1.0,
           }));
-          setServices([...rawServices.map((s: any) => ({ ...s, type: 'microservice' })), ...infraItems]);
+          const combined = [...rawServices.map((s: any) => ({ ...s, type: 'microservice' })), ...infraItems];
+          setServices((prev) => (JSON.stringify(prev) === JSON.stringify(combined) ? prev : combined));
         })
         .catch(console.debug);
 
@@ -198,7 +258,64 @@ export const App: React.FC = () => {
           }));
         })
         .catch(console.debug);
-    }, 12000);
+
+      api
+        .getIncidents()
+        .then((res) => {
+          const list = Array.isArray(res) ? res : (res as any)?.items || [];
+          setIncidents((prev) => {
+            const hasChanged =
+              prev.length !== list.length ||
+              prev.some(
+                (p, i) =>
+                  p.id !== list[i]?.id ||
+                  p.status !== list[i]?.status ||
+                  p.total_occurrences !== list[i]?.total_occurrences ||
+                  Boolean(p.resolution) !== Boolean(list[i]?.resolution)
+              );
+            if (!hasChanged) return prev;
+            return list;
+          });
+          if (!selectedIncidentRef.current && list.length > 0) {
+            setSelectedIncident(list[0]);
+            selectedIncidentRef.current = list[0];
+            loadInvestigation(list[0].id, true /* silent */);
+          } else if (selectedIncidentRef.current) {
+            const updatedCurrent = list.find((i: any) => i.id === selectedIncidentRef.current?.id);
+            if (
+              updatedCurrent &&
+              (updatedCurrent.status !== selectedIncidentRef.current.status ||
+                updatedCurrent.total_occurrences !== selectedIncidentRef.current.total_occurrences ||
+                Boolean(updatedCurrent.resolution) !== Boolean(selectedIncidentRef.current.resolution))
+            ) {
+              setSelectedIncident(updatedCurrent);
+              selectedIncidentRef.current = updatedCurrent;
+            }
+          }
+        })
+        .catch(console.debug);
+
+      api
+        .getRecentEvents(50)
+        .then((evList) => {
+          if (Array.isArray(evList) && evList.length > 0) {
+            setEvents((prev) => {
+              if (prev.length === 0) return evList;
+              const existingIds = new Set(prev.map((e) => e.id));
+              const novel = evList.filter((e) => !existingIds.has(e.id));
+              if (novel.length > 0) {
+                return [...novel, ...prev].slice(0, 100);
+              }
+              return prev;
+            });
+          }
+        })
+        .catch(console.debug);
+
+      if (selectedIncidentRef.current) {
+        loadInvestigation(selectedIncidentRef.current.id, true /* silent */);
+      }
+    }, 5000);
 
     return () => {
       unsubConnection();
@@ -206,39 +323,52 @@ export const App: React.FC = () => {
       window.removeEventListener('keydown', handleKeyDown);
       clearInterval(interval);
     };
-  }, [selectedIncident?.id]);
+  }, []);
 
   // Handle selecting an incident
-  const handleSelectIncident = (inc: Incident) => {
+  const handleSelectIncident = (inc: Incident, openModal: boolean = false) => {
+    const isDifferent = selectedIncident?.id !== inc.id;
     setSelectedIncident(inc);
-    loadInvestigation(inc.id);
+    selectedIncidentRef.current = inc;
+    if (openModal) {
+      setIsModalOpen(true);
+    }
+    if (isDifferent) {
+      setInvestigation(null);
+      loadInvestigation(inc.id, false /* show initial loader */);
+    } else {
+      loadInvestigation(inc.id, true /* silent in-place refresh */);
+    }
   };
 
   // Handle triggering an agent run manually
   const handleTriggerAgent = async (incidentId: string, primaryService: string) => {
     try {
       await api.triggerInvestigation(incidentId, primaryService);
-      loadInvestigation(incidentId);
+      loadInvestigation(incidentId, true /* silent */);
     } catch (err: any) {
-      alert(`Trigger failed: ${err.message}`);
+      console.error('Failed to trigger agent investigation:', err);
+      alert(`Trigger failed: ${err.message || err}`);
     }
   };
 
   // Handle human approval
   const handleApprove = async (incidentId: string, feedback: string) => {
     await api.submitApproval(incidentId, true, feedback);
+    setIsModalOpen(false);
     await loadPlatformData();
     if (selectedIncident) {
-      await loadInvestigation(selectedIncident.id);
+      await loadInvestigation(selectedIncident.id, true);
     }
   };
 
   // Handle human rejection
   const handleReject = async (incidentId: string, feedback: string) => {
     await api.submitApproval(incidentId, false, feedback);
+    setIsModalOpen(false);
     await loadPlatformData();
     if (selectedIncident) {
-      await loadInvestigation(selectedIncident.id);
+      await loadInvestigation(selectedIncident.id, true);
     }
   };
 
@@ -249,28 +379,28 @@ export const App: React.FC = () => {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         isConnected={isWsConnected}
+        isRefreshing={isRefreshing}
         onRefresh={loadPlatformData}
         onOpenSearch={() => setIsSearchOpen(true)}
-        isRefreshing={isRefreshing}
       />
 
       {/* Main Content Area */}
       <main className="main-content">
         {activeTab === 'dashboard' && (
           <>
-            {/* Top KPI Metrics */}
+            {/* Top Stats Overview */}
             <StatsRow stats={stats} services={services} isLoading={isRefreshing} />
 
-            {/* Live Microservices Health Probing */}
+            {/* Live Microservices & Infrastructure Fleet Grid */}
             <ServicesGrid
               services={services}
               onSelectService={(svc) => {
                 const matched = incidents.find((i) => i.primary_service.toLowerCase() === svc.toLowerCase());
-                if (matched) handleSelectIncident(matched);
+                if (matched) handleSelectIncident(matched, true);
               }}
             />
 
-            {/* Split Grid: Live Event Feed & Active Incidents Queue */}
+            {/* Two Column Grid: Event Feed & Active Incidents */}
             <div
               style={{
                 display: 'grid',
@@ -282,13 +412,13 @@ export const App: React.FC = () => {
                 events={events}
                 onSelectIncident={(id) => {
                   const matched = incidents.find((i) => i.id === id);
-                  if (matched) handleSelectIncident(matched);
+                  if (matched) handleSelectIncident(matched, true);
                 }}
               />
 
               <IncidentQueue
                 incidents={incidents}
-                onSelectIncident={handleSelectIncident}
+                onSelectIncident={(inc) => handleSelectIncident(inc, true)}
                 onTriggerAgent={handleTriggerAgent}
                 selectedIncidentId={selectedIncident?.id}
               />
@@ -303,7 +433,7 @@ export const App: React.FC = () => {
             selectedService={selectedIncident?.primary_service}
             onSelectService={(svc) => {
               const matched = incidents.find((i) => i.primary_service.toLowerCase() === svc.toLowerCase());
-              if (matched) handleSelectIncident(matched);
+              if (matched) handleSelectIncident(matched, true);
             }}
             isLoading={isRefreshing}
             onReload={() => api.getDependencyGraph().then(setGraphData)}
@@ -318,7 +448,7 @@ export const App: React.FC = () => {
             isLoading={isLoadingInvestigation}
             onSelectIncident={(id) => {
               const matched = incidents.find((i) => i.id === id);
-              if (matched) handleSelectIncident(matched);
+              if (matched) handleSelectIncident(matched, false);
               else loadInvestigation(id);
             }}
             onTriggerInvestigation={handleTriggerAgent}
@@ -327,16 +457,19 @@ export const App: React.FC = () => {
       </main>
 
       {/* Incident Detail Modal */}
-      {selectedIncident && activeTab !== 'inspector' && (
+      {selectedIncident && isModalOpen && activeTab !== 'inspector' && (
         <IncidentDetailModal
           incident={selectedIncident}
           investigation={investigation}
           isLoadingInvestigation={isLoadingInvestigation}
-          onClose={() => setSelectedIncident(null)}
+          onClose={() => setIsModalOpen(false)}
           onApprove={handleApprove}
           onReject={handleReject}
           onViewInInspector={(id) => {
-            setSelectedIncident(incidents.find((i) => i.id === id) || selectedIncident);
+            setIsModalOpen(false);
+            const matched = incidents.find((i) => i.id === id) || selectedIncident;
+            setSelectedIncident(matched);
+            selectedIncidentRef.current = matched;
             setActiveTab('inspector');
           }}
         />
@@ -348,10 +481,16 @@ export const App: React.FC = () => {
         onClose={() => setIsSearchOpen(false)}
         incidents={incidents}
         services={services}
-        onSelectIncident={handleSelectIncident}
+        onSelectIncident={(inc) => {
+          handleSelectIncident(inc, true);
+          setIsSearchOpen(false);
+        }}
         onSelectService={(svc) => {
           const matched = incidents.find((i) => i.primary_service.toLowerCase() === svc.toLowerCase());
-          if (matched) handleSelectIncident(matched);
+          if (matched) {
+            handleSelectIncident(matched, true);
+            setIsSearchOpen(false);
+          }
         }}
       />
     </div>

@@ -209,6 +209,7 @@ class IncidentClusteringPipeline:
         async with async_session_factory() as session:
             try:
                 newly_created_incidents: List[Dict[str, Any]] = []
+                updated_incidents: List[Dict[str, Any]] = []
 
                 # 4a. Process Redis Hits: Update PostgreSQL counters (Zero Embedding Cost)
                 for c in redis_matched:
@@ -222,6 +223,16 @@ class IncidentClusteringPipeline:
                     if not updated:
                         novel_candidates.append(c)
                         stats["redis_fingerprint_hits"] -= 1
+                    else:
+                        inc_obj, _ = updated
+                        updated_incidents.append({
+                            "id": str(inc_obj.id),
+                            "primary_service": inc_obj.primary_service,
+                            "severity": inc_obj.severity,
+                            "title": inc_obj.title,
+                            "total_occurrences": inc_obj.total_occurrences,
+                            "count": c.occurrence_count,
+                        })
 
                 # 4b. Process Novel Candidates
                 if novel_candidates:
@@ -474,6 +485,29 @@ class IncidentClusteringPipeline:
                 await session.commit()
                 logger.info("Successfully committed batch clustering transactions to PostgreSQL.")
 
+                from backend.api.v1.ws import ws_manager
+
+                # Broadcast updates for recurring hits
+                for inc_update in updated_incidents:
+                    try:
+                        await ws_manager.broadcast({
+                            "type": "incident:updated",
+                            "incident_id": inc_update["id"],
+                            "service": inc_update["primary_service"],
+                            "severity": inc_update["severity"],
+                            "message": f"Recurring failure in {inc_update['primary_service']}: +{inc_update['count']} hit(s) (total: {inc_update['total_occurrences']})",
+                            "data": {
+                                "incident_id": inc_update["id"],
+                                "primary_service": inc_update["primary_service"],
+                                "severity": inc_update["severity"],
+                                "title": inc_update["title"],
+                                "total_occurrences": inc_update["total_occurrences"],
+                                "message": f"Recurring failure in {inc_update['primary_service']}: +{inc_update['count']} hit(s) (total: {inc_update['total_occurrences']})",
+                            },
+                        })
+                    except Exception as upd_err:
+                        logger.debug("Silent WS broadcast failure on incident update: %s", upd_err)
+
                 # Automatically trigger agent auto-investigation and notify UI via WebSocket for all newly created incidents
                 for inc_info in newly_created_incidents:
                     inc_id = inc_info["id"]
@@ -485,10 +519,12 @@ class IncidentClusteringPipeline:
                         logger.warning("Failed to auto-dispatch agent investigation for incident %s: %s", inc_id, dispatch_err)
 
                     try:
-                        from backend.api.v1.ws import ws_manager
                         await ws_manager.broadcast({
                             "type": "incident:created",
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "incident_id": inc_id,
+                            "service": inc_info["primary_service"],
+                            "severity": inc_info["severity"],
+                            "message": f"New incident detected in {inc_info['primary_service']}: {inc_info['title']}",
                             "data": {
                                 "incident_id": inc_id,
                                 "primary_service": inc_info["primary_service"],

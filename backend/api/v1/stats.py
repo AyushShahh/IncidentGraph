@@ -71,5 +71,5 @@ async def get_platform_stats(session: AsyncSession = Depends(get_db_session)) ->
 
 @router.get("/events", summary="Get recent live event stream history")
 async def get_recent_events() -> List[Dict[str, Any]]:
-    """Return in-memory recent event history stream."""
-    return ws_manager.get_history()
+    """Return recent event history stream from Redis / memory."""
+    return await ws_manager.get_history_async()

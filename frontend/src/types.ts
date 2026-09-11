@@ -28,7 +28,7 @@ export interface IncidentCandidate {
 export interface Incident {
   id: string;
   title: string;
-  status: 'ACTIVE' | 'RESOLVED' | 'SUPPRESSED';
+  status: 'ACTIVE' | 'INVESTIGATING' | 'AWAITING_APPROVAL' | 'RESOLVED' | 'SUPPRESSED';
   severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
   primary_service: string;
   affected_services: string[];
@@ -38,6 +38,7 @@ export interface Incident {
   representative_log?: Record<string, any>;
   summary?: string;
   candidates?: IncidentCandidate[];
+  resolution?: Record<string, any>;
 }
 
 export interface EvidenceItem {

@@ -96,6 +96,23 @@ def test_summarize_tool_output_topology(ctx_mgr):
     assert "orders" in res_list["finding_summary"]
 
 
+def test_summarize_tool_output_routes_config_dirs(ctx_mgr):
+    routes = [{"method": "POST", "path": "/checkout"}]
+    res = ctx_mgr.summarize_tool_output("get_service_routes", routes)
+    assert res["relevance"] == "routes"
+    assert "POST /checkout" in res["finding_summary"]
+
+    cfg = {"service": "payments", "config_name": "Dockerfile", "content": "FROM python:3.11\nRUN pip install ..."}
+    res_cfg = ctx_mgr.summarize_tool_output("read_config", cfg)
+    assert res_cfg["relevance"] == "configuration"
+    assert "Dockerfile" in res_cfg["finding_summary"]
+
+    dir_listing = {"service": "payments", "path": ".", "entries": [{"name": "main.py", "is_directory": False}]}
+    res_dir = ctx_mgr.summarize_tool_output("list_directory", dir_listing)
+    assert res_dir["relevance"] == "directory_listing"
+    assert "main.py" in res_dir["finding_summary"]
+
+
 def test_is_duplicate_call(ctx_mgr):
     visited_files = {"services/inventory.py"}
     visited_symbols = {"reserve_stock"}
@@ -108,7 +125,29 @@ def test_is_duplicate_call(ctx_mgr):
     assert ctx_mgr.is_duplicate_call("find_symbol", {"symbol_name": "reserve_stock"}, visited_files, visited_symbols)
     assert not ctx_mgr.is_duplicate_call("find_symbol", {"symbol_name": "process_payment"}, visited_files, visited_symbols)
 
-    # Unrestricted tools
+    # Line ranges: same file with different line range is NOT duplicate
+    visited_ranges = {"services/inventory.py:1-30"}
+    assert ctx_mgr.is_duplicate_call(
+        "read_lines",
+        {"file_path": "services/inventory.py", "start_line": 1, "end_line": 30},
+        visited_files,
+        visited_symbols,
+        visited_ranges=visited_ranges,
+    )
+    assert not ctx_mgr.is_duplicate_call(
+        "read_lines",
+        {"file_path": "services/inventory.py", "start_line": 50, "end_line": 80},
+        visited_files,
+        visited_symbols,
+        visited_ranges=visited_ranges,
+    )
+
+    # Search queries
+    visited_queries = {"exchange_rates"}
+    assert ctx_mgr.is_duplicate_call("search_code", {"query": "EXCHANGE_RATES"}, visited_files, visited_symbols, visited_queries)
+    assert not ctx_mgr.is_duplicate_call("search_code", {"query": "convert_currency"}, visited_files, visited_symbols, visited_queries)
+
+    # Unrestricted tools when no query set passed
     assert not ctx_mgr.is_duplicate_call("search_code", {"query": "test"}, visited_files, visited_symbols)
 
 

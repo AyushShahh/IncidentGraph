@@ -70,7 +70,7 @@ export const Header: React.FC<HeaderProps> = ({
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <span style={{ fontSize: '1.05rem', fontWeight: 600, color: '#0f172a', letterSpacing: '-0.02em' }}>
-                AI Incident Intelligence
+                IncidentGraph
               </span>
               <span
                 style={{

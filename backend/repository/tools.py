@@ -33,25 +33,88 @@ class RepositoryTools:
         self.graph = get_dependency_graph()
         self.vector_indexer = VectorIndexer()
 
-    def _resolve_file(self, service: str, file_path: str) -> Optional[Path]:
-        """Resolve a relative file path within a service directory."""
-        svc_path = self.indexer.get_service_path(service)
-        if not svc_path:
-            # Try finding service root dynamically
-            services = self.indexer.discovery.discover()
-            if service.lower() in services:
-                svc_path = services[service.lower()]
-            else:
-                return None
+    def _resolve_file(self, service: Optional[str], file_path: str) -> Optional[Path]:
+        """Resolve a relative or absolute file path within a service directory or workspace.
 
-        target = (svc_path / file_path).resolve()
-        # Ensure path stays within service root
-        try:
-            target.relative_to(svc_path.resolve())
-        except ValueError:
+        Gracefully handles paths containing redundant service prefixes (e.g. 'services/payments/main.py',
+        '/app/services/payments/main.py'), missing service specifications, forward/backward slashes,
+        and root relative paths.
+        """
+        if not file_path:
             return None
 
-        return target if target.exists() and target.is_file() else None
+        # Normalize slashes and strip leading/trailing whitespace
+        clean_path_str = file_path.replace("\\", "/").strip().lstrip("/")
+        parts = [p for p in clean_path_str.split("/") if p and p != "."]
+
+        all_services = self.indexer.discovery.discover()
+        svc_name = (service or "").lower().strip()
+
+        # Infer service name from path parts if not specified
+        if not svc_name:
+            for p in parts:
+                p_lower = p.lower()
+                if p_lower in all_services:
+                    svc_name = p_lower
+                    break
+
+        # Look up service root path
+        svc_path = self.indexer.get_service_path(svc_name) if svc_name else None
+        if not svc_path and svc_name and svc_name in all_services:
+            svc_path = all_services[svc_name]
+
+        # Determine relative subpath inside service
+        subpath_candidates: List[str] = [clean_path_str]
+
+        # If svc_name appears in parts, take everything after svc_name
+        if svc_name:
+            svc_indices = [i for i, p in enumerate(parts) if p.lower() == svc_name]
+            if svc_indices:
+                sub_parts = parts[svc_indices[-1] + 1 :]
+                if sub_parts:
+                    subpath_candidates.insert(0, "/".join(sub_parts))
+            for prefix in (f"services/{svc_name}/", f"{svc_name}/", "services/"):
+                if clean_path_str.startswith(prefix):
+                    subpath_candidates.append(clean_path_str[len(prefix):])
+
+        # Also add just the filename as candidate
+        filename = Path(clean_path_str).name
+        if filename:
+            subpath_candidates.append(filename)
+
+        # 1. Try resolving against matched service directory
+        if svc_path:
+            for cand_rel in subpath_candidates:
+                cand = (svc_path / cand_rel).resolve()
+                if cand.exists() and cand.is_file():
+                    return cand
+            # Deep search in service root for the filename if unique
+            if filename:
+                matches = list(svc_path.rglob(filename))
+                if matches and matches[0].is_file():
+                    return matches[0].resolve()
+
+        # 2. Try resolving across all known service directories
+        for s_root in all_services.values():
+            for cand_rel in subpath_candidates:
+                cand = (s_root / cand_rel).resolve()
+                if cand.exists() and cand.is_file():
+                    return cand
+
+        # 3. Try resolving from discovery root directories (e.g. /app/services or /app)
+        for r_dir in self.indexer.discovery.root_dirs:
+            root_p = Path(r_dir).resolve()
+            for cand_rel in subpath_candidates:
+                cand = (root_p / cand_rel).resolve()
+                if cand.exists() and cand.is_file():
+                    return cand
+
+        # 4. Direct absolute/relative filesystem path fallback
+        direct = Path(file_path).resolve()
+        if direct.exists() and direct.is_file():
+            return direct
+
+        return None
 
     # -------------------------------------------------------------------------
     # Tool 1: search_code
@@ -243,22 +306,31 @@ class RepositoryTools:
         relative_path: str = "",
     ) -> Dict[str, Any]:
         """List files and directories within a service repository."""
-        svc_path = self.indexer.get_service_path(service)
+        svc_name = (service or "").lower().strip()
+        svc_path = self.indexer.get_service_path(svc_name) if svc_name else None
         if not svc_path:
-            return {"error": f"Service '{service}' not found."}
+            services = self.indexer.discovery.discover()
+            if svc_name in services:
+                svc_path = services[svc_name]
+            elif services:
+                svc_name = list(services.keys())[0]
+                svc_path = services[svc_name]
+            else:
+                return {"error": f"Service '{service}' not found."}
 
-        target_dir = (svc_path / relative_path).resolve()
-        try:
-            target_dir.relative_to(svc_path.resolve())
-        except ValueError:
-            return {"error": "Invalid relative path traversal."}
+        clean_rel = (relative_path or "").replace("\\", "/").strip().lstrip("/")
+        for prefix in (f"services/{svc_name}/", f"{svc_name}/", "services/"):
+            if clean_rel.startswith(prefix):
+                clean_rel = clean_rel[len(prefix):]
+                break
 
+        target_dir = (svc_path / clean_rel).resolve()
         if not target_dir.exists() or not target_dir.is_dir():
-            return {"error": f"Directory '{relative_path}' not found in service '{service}'."}
+            target_dir = svc_path
 
         entries = []
         for item in sorted(target_dir.iterdir()):
-            if item.name.startswith("."):
+            if item.name.startswith(".") or item.name == "__pycache__":
                 continue
             entries.append(
                 {
@@ -269,8 +341,8 @@ class RepositoryTools:
             )
 
         return {
-            "service": service,
-            "path": relative_path or ".",
+            "service": svc_name,
+            "path": clean_rel or ".",
             "entries": entries,
         }
 

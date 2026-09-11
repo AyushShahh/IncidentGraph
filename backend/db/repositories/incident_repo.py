@@ -176,7 +176,7 @@ class IncidentRepository:
             .join(IncidentCandidate, IncidentCandidate.incident_id == Incident.id)
             .where(
                 IncidentCandidate.fingerprint == fingerprint,
-                Incident.status == "ACTIVE",
+                Incident.status.in_(["ACTIVE", "INVESTIGATING", "AWAITING_APPROVAL"]),
             )
             .order_by(Incident.last_seen.desc())
             .limit(1)
@@ -237,10 +237,13 @@ class IncidentRepository:
         session: AsyncSession,
         incident_id: uuid.UUID,
     ) -> Optional[Incident]:
-        """Fetch an incident by UUID with candidates eagerly loaded."""
+        """Fetch an incident by UUID with candidates and resolution eagerly loaded."""
         stmt = (
             select(Incident)
-            .options(selectinload(Incident.candidates))
+            .options(
+                selectinload(Incident.candidates),
+                selectinload(Incident.resolution),
+            )
             .where(Incident.id == incident_id)
         )
         result = await session.execute(stmt)
@@ -270,7 +273,10 @@ class IncidentRepository:
         offset: int = 0,
     ) -> Tuple[List[Incident], int]:
         """List incidents with filtering and pagination, returning items and total count."""
-        base_query = select(Incident).options(selectinload(Incident.candidates))
+        base_query = select(Incident).options(
+            selectinload(Incident.candidates),
+            selectinload(Incident.resolution),
+        )
         count_query = select(func.count(Incident.id))
 
         if status:
@@ -296,7 +302,7 @@ class IncidentRepository:
         """Compute aggregated incident statistics."""
         # Total counts by status
         total_stmt = select(func.count(Incident.id))
-        active_stmt = select(func.count(Incident.id)).where(Incident.status == "ACTIVE")
+        active_stmt = select(func.count(Incident.id)).where(Incident.status.in_(["ACTIVE", "INVESTIGATING", "AWAITING_APPROVAL"]))
         resolved_stmt = select(func.count(Incident.id)).where(Incident.status == "RESOLVED")
         occurrences_stmt = select(func.sum(Incident.total_occurrences))
 

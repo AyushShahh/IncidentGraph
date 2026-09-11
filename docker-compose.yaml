@@ -287,6 +287,7 @@ services:
     volumes:
       - ./backend:/app/backend
       - ./shared:/app/shared
+      - ./services:/app/services:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -376,6 +377,18 @@ services:
       redis:
         condition: service_healthy
       qdrant:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+      orders:
+        condition: service_healthy
+      payments:
+        condition: service_healthy
+      inventory:
+        condition: service_healthy
+      notifications:
+        condition: service_healthy
+      backend:
         condition: service_healthy
     networks:
       - app-network

@@ -105,9 +105,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as exc:
         logger.warning("Repository indexing startup task deferred: %s", exc)
 
+    # Start Redis Pub/Sub WebSocket broadcast listener
+    from backend.api.v1.ws import ws_manager
+    ws_listener_task = asyncio.create_task(ws_manager.start_redis_listener())
+    ws_manager._listener_task = ws_listener_task
+
     yield
 
     logger.info("Shutting down %s...", settings.PROJECT_NAME)
+    ws_manager.stop_redis_listener()
     await close_redis_client()
     await engine.dispose()
     logger.info("Platform backend stopped.")

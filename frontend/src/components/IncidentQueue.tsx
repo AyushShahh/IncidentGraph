@@ -1,5 +1,5 @@
 import React from 'react';
-import { AlertCircle, CheckCircle, Clock, Eye, Play, ShieldAlert } from 'lucide-react';
+import { AlertCircle, CheckCircle, CheckCheck, Clock, Eye, Play, RotateCw, ShieldAlert } from 'lucide-react';
 import { Incident } from '../types';
 
 interface IncidentQueueProps {
@@ -28,6 +28,20 @@ export const IncidentQueue: React.FC<IncidentQueueProps> = ({
       return (
         <span className="badge badge-healthy">
           <CheckCircle size={11} /> Resolved
+        </span>
+      );
+    }
+    if (status === 'AWAITING_APPROVAL') {
+      return (
+        <span className="badge badge-warning">
+          <Clock size={11} /> Awaiting Approval
+        </span>
+      );
+    }
+    if (status === 'INVESTIGATING') {
+      return (
+        <span className="badge badge-info">
+          <RotateCw size={11} className="spin-slow" /> Investigating
         </span>
       );
     }
@@ -226,29 +240,113 @@ export const IncidentQueue: React.FC<IncidentQueueProps> = ({
                   </div>
 
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onTriggerAgent(inc.id, inc.primary_service);
-                      }}
-                      className="btn btn-secondary btn-sm"
-                      style={{ fontSize: '0.725rem', padding: '0.2rem 0.5rem' }}
-                      title="Run Autonomous Agent"
-                    >
-                      <Play size={11} />
-                      Investigate
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onSelectIncident(inc);
-                      }}
-                      className="btn btn-primary btn-sm"
-                      style={{ fontSize: '0.725rem', padding: '0.2rem 0.5rem' }}
-                    >
-                      <Eye size={11} />
-                      View RCA
-                    </button>
+                    {inc.status === 'INVESTIGATING' ? (
+                      <>
+                        <span
+                          className="badge badge-info"
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '0.25rem',
+                            fontSize: '0.72rem',
+                            padding: '0.2rem 0.5rem',
+                          }}
+                        >
+                          <RotateCw size={11} className="spin-slow" />
+                          Investigating...
+                        </span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onSelectIncident(inc);
+                          }}
+                          className="btn btn-secondary btn-sm"
+                          style={{ fontSize: '0.725rem', padding: '0.2rem 0.5rem' }}
+                        >
+                          <Eye size={11} />
+                          Live Trace
+                        </button>
+                      </>
+                    ) : inc.status === 'AWAITING_APPROVAL' ? (
+                      <>
+                        <span
+                          className="badge badge-warning"
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '0.25rem',
+                            fontSize: '0.72rem',
+                            padding: '0.2rem 0.5rem',
+                          }}
+                        >
+                          <Clock size={11} />
+                          Fix Ready
+                        </span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onSelectIncident(inc);
+                          }}
+                          className="btn btn-primary btn-sm"
+                          style={{ fontSize: '0.725rem', padding: '0.2rem 0.6rem' }}
+                        >
+                          <Eye size={11} />
+                          Review & Approve
+                        </button>
+                      </>
+                    ) : (inc.status === 'RESOLVED' || Boolean(inc.resolution)) ? (
+                      <>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onTriggerAgent(inc.id, inc.primary_service);
+                          }}
+                          className="btn btn-ghost btn-sm"
+                          style={{ fontSize: '0.725rem', padding: '0.2rem 0.45rem', color: '#64748b' }}
+                          title="Re-run autonomous investigation"
+                        >
+                          <RotateCw size={11} />
+                          Re-run
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onSelectIncident(inc);
+                          }}
+                          className="btn btn-primary btn-sm"
+                          style={{ fontSize: '0.725rem', padding: '0.2rem 0.6rem' }}
+                        >
+                          <Eye size={11} />
+                          View RCA
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onTriggerAgent(inc.id, inc.primary_service);
+                          }}
+                          className="btn btn-secondary btn-sm"
+                          style={{ fontSize: '0.725rem', padding: '0.2rem 0.55rem' }}
+                          title="Run Autonomous Agent"
+                        >
+                          <Play size={11} />
+                          Investigate
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onSelectIncident(inc);
+                          }}
+                          className="btn btn-secondary btn-sm"
+                          style={{ fontSize: '0.725rem', padding: '0.2rem 0.55rem' }}
+                        >
+                          <Eye size={11} />
+                          Inspect
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>

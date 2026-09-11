@@ -212,12 +212,22 @@ async def approve_investigation(
         await ws_manager.broadcast({
             "type": "agent:approved" if payload.approved else "agent:rejected",
             "incident_id": incident_id,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
             "data": {
                 "status": record.status,
                 "approved": payload.approved,
                 "reviewer_feedback": payload.reviewer_feedback,
                 "message": f"Fix for incident {incident_id} {'APPROVED' if payload.approved else 'REJECTED'} by operator.",
+            },
+        })
+        await ws_manager.broadcast({
+            "type": "incident:updated",
+            "incident_id": incident_id,
+            "service": rep_dict.get("primary_service"),
+            "severity": "LOW" if payload.approved else "HIGH",
+            "message": f"Incident marked {'RESOLVED' if payload.approved else 'REJECTED'}",
+            "data": {
+                "incident_id": incident_id,
+                "status": "RESOLVED" if payload.approved else "REJECTED",
             },
         })
     except Exception as exc:

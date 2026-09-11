@@ -8,6 +8,7 @@ import {
   FileText,
   Lightbulb,
   Play,
+  RotateCw,
   ShieldCheck,
   Terminal,
 } from 'lucide-react';
@@ -92,15 +93,30 @@ export const AgentInspector: React.FC<AgentInspectorProps> = ({
         {currentIncident && (
           <button
             onClick={() => onTriggerInvestigation(currentIncident.id, currentIncident.primary_service)}
+            disabled={investigation?.status === 'INVESTIGATING'}
             className="btn btn-secondary btn-sm"
           >
-            <Play size={12} />
-            Dispatch Investigation
+            {investigation?.status === 'INVESTIGATING' ? (
+              <>
+                <RotateCw size={12} className="spin-slow" />
+                Investigating...
+              </>
+            ) : investigation || currentIncident.status === 'RESOLVED' || Boolean(currentIncident.resolution) ? (
+              <>
+                <RotateCw size={12} />
+                Re-run Investigation
+              </>
+            ) : (
+              <>
+                <Play size={12} />
+                Dispatch Investigation
+              </>
+            )}
           </button>
         )}
       </div>
 
-      {isLoading ? (
+      {isLoading && !investigation ? (
         <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
           <Bot size={28} color="#0f172a" style={{ margin: '0 auto 0.75rem' }} />
           <div>Retrieving agent checkpoints and execution trace from storage...</div>
