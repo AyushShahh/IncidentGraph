@@ -59,7 +59,9 @@ flowchart TD
         AST --> MAN
         AST --> NX
         AST --> QD_CODE
-        MAN & NX & QD_CODE --> TOOLS
+        MAN --> TOOLS
+        NX --> TOOLS
+        QD_CODE --> TOOLS
     end
 
     subgraph AgentLoop ["Stage 4: Autonomous LangGraph Diagnostic Agent"]
@@ -77,7 +79,7 @@ flowchart TD
         EXEC -->|Execute| TOOLS
         EXEC --> HYPO
         HYPO -->|Iterate / Verify| PLAN
-        HYPO -->|Confidence >= 0.85| REV
+        HYPO -->|"Confidence >= 0.85"| REV
     end
 
     subgraph Frontend ["Stage 5: IncidentGraph Command Center"]

@@ -2,10 +2,16 @@
 
 An autonomous AI incident intelligence and remediation platform for distributed microservices. **IncidentGraph** continuously monitors distributed telemetry, clusters anomalies into causal incidents, performs autonomous root cause analysis down to exact source code lines using LangGraph, and provides an interactive SRE command center with Human-in-the-Loop decision control.
 
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](docker-compose.yaml)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![LangGraph](https://img.shields.io/badge/LangGraph-Multi--Agent-FF6F00)](https://langchain-ai.github.io/langgraph/)
+[![Celery](https://img.shields.io/badge/Celery-Distributed_Tasks-37814A?logo=celery&logoColor=white)](https://docs.celeryq.dev)
+[![Apache Kafka](https://img.shields.io/badge/Apache_Kafka-Event_Streaming-231F20?logo=apachekafka&logoColor=white)](https://kafka.apache.org)
+[![Qdrant](https://img.shields.io/badge/Qdrant-Vector_Database-DC382D?logo=qdrant&logoColor=white)](https://qdrant.tech)
+[![Redis](https://img.shields.io/badge/Redis-Caching_&_State-DC382D?logo=redis&logoColor=white)](https://redis.io)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Relational_Store-4169E1?logo=postgresql&logoColor=white)](https://postgresql.org)
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](frontend/)
 [![Tests](https://img.shields.io/badge/Tests-103%20Passing-brightgreen)](tests/)
 
@@ -23,12 +29,12 @@ flowchart TD
         PAY --> NOTIF
     end
 
-    Fleet -.->|Canonical JSON Logs + Trace ID| KFK[("Apache Kafka (:9092)")]
+    Fleet -.->|Canonical JSON Logs and Trace ID| KFK[("Apache Kafka (:9092)")]
 
     subgraph Pipeline ["Clustering & Intelligence"]
         KFK --> CON["Streaming Consumer"]
         CON --> CEL["Celery Batch Workers"]
-        CEL -->|O(1) Deduplication| RD[("Redis")]
+        CEL -->|Fast Hash Deduplication| RD[("Redis")]
         CEL -->|Dense Semantic Search| QD[("Qdrant Vector DB")]
         CEL -->|Density Clustering| HDB["HDBSCAN"]
         HDB --> PG[("PostgreSQL")]
@@ -37,13 +43,13 @@ flowchart TD
     subgraph Agent ["Autonomous Investigation Agent"]
         PG -->|Auto-Dispatch| LG["LangGraph Diagnostics Workflow"]
         LG -->|Check Solution Memory| QD
-        LG -->|AST & Topology Inspection| REPO["Repository Intelligence Engine"]
-        LG -->|Hypothesis & Patch Proposal| HITL{"Human-in-the-Loop Review"}
-        HITL -->|Approve & Index| QD
+        LG -->|AST and Topology Inspection| REPO["Repository Intelligence Engine"]
+        LG -->|Hypothesis and Patch Proposal| HITL{"Human-in-the-Loop Review"}
+        HITL -->|Approve and Index| QD
     end
 
     subgraph Dashboard ["IncidentGraph Command Center"]
-        UI["React Web Dashboard (:3000)"] <-->|REST API & WebSockets| BE["Platform Backend (:8000)"]
+        UI["React Web Dashboard (:3000)"] <-->|REST API and WebSockets| BE["Platform Backend (:8000)"]
         BE <--> PG
         BE <--> LG
     end
@@ -54,6 +60,7 @@ flowchart TD
 ## Key Features
 
 - **Distributed Tracing & Canonical Logging**: Outbound propagation of `x-trace-id`, `x-request-id`, and `x-session-id` across HTTP hops with structured 15-field JSON logging.
+- **Asynchronous Task Queue & Batch Processing (Celery & Redis)**: High-throughput log batching and background diagnostic agent dispatch using Celery workers backed by Redis queues.
 - **Streaming Incident Clustering**: Real-time Kafka consumer pairing Redis O(1) fingerprint lookups, dense semantic vector deduplication (Qdrant), and HDBSCAN density clustering.
 - **Repository Intelligence & Context Engine**: Domain-agnostic AST parsing, incremental SHA256 code manifests, NetworkX dependency interaction graph, and blast radius calculation.
 - **Autonomous LangGraph Diagnostic Agent**: Multi-iteration reasoning loop (Planner, Evidence Gatherer, Hypothesis Generator, and Adversarial Auditor) that inspects code down to file and line ranges.
@@ -174,4 +181,4 @@ For in-depth technical documentation, refer to:
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+Distributed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
